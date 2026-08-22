@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Foundry — User Manual</title>
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="mark" aria-hidden="true"></span>
+  <span class="brand">SLM&nbsp;Foundry <span class="doc">· User Manual</span></span>
+  <nav class="docnav">
+    <a href="user-manual.html" class="here">Using it</a>
+    <a href="methods.html">Methods</a>
+  </nav>
+  <div class="search-wrap">
+    <span class="icon" aria-hidden="true">⌕</span>
+    <input id="search" type="search" placeholder="Search the manual…" aria-label="Search">
+    <span class="slash">/</span>
+  </div>
+  <button class="btn" id="theme-toggle">Theme</button>
+</header>
+
+<div class="layout">
+<nav class="toc">
+  <h4>Beginner</h4>
+  <a href="#what-is-it">What SLM Foundry is</a>
+  <a href="#vocabulary">The words you need</a>
+  <a href="#first-run">Your first fine-tune</a>
+  <a href="#reading-results">Reading your results</a>
+
+  <h4>Intermediate</h4>
+  <a href="#datasets">The four kinds of data</a>
+  <a href="#review">Teaching by comparison</a>
+  <a href="#preference-training">Training on preferences</a>
+  <a href="#benchmark-promote">Benchmarking &amp; promoting</a>
+  <a href="#teams-queue">Teams, roles and the queue</a>
+
+  <h4>Advanced</h4>
+  <a href="#choosing-method">Choosing an alignment method</a>
+  <a href="#reward-sources">Where reward comes from</a>
+  <a href="#rlaif">RLAIF and auditing the judge</a>
+  <a href="#tuning">Tuning hyperparameters</a>
+  <a href="#production">Running it for real</a>
+  <a href="#troubleshooting">Troubleshooting</a>
+
+  <h4>Reference</h4>
+  <a href="#glossary">Glossary</a>
+</nav>
+
+<main>
+<h1>SLM Foundry — User Manual</h1>
+<p class="lede">
+  How to take a pile of your own data and end up with a small language model that
+  does your task, using nothing but the web console. Read the beginner sections
+  in order; skip ahead once you have a model that works.
+</p>
+
+<div class="filters" role group aria-label="Filter by level">
+  <button data-filter="all" class="on">Everything</button>
+  <button data-filter="beginner">Beginner</button>
+  <button data-filter="intermediate">Intermediate</button>
+  <button data-filter="advanced">Advanced</button>
+</div>
+<div class="search-status" id="search-status" hidden></div>
+
+<!-- ═══════════════════════════════════════════════════ BEGINNER ═══ -->
+
+<section id="what-is-it" data-level="beginner">
+  <div class="section-head">
+    <h2>What SLM Foundry is</h2><span class="chip beginner">Beginner</span>
+  </div>
+  <div class="rule"></div>
+
+  <p>
+    SLM Foundry is a workshop for building your own <strong>small language
+    model</strong>. You bring examples of the work you want done; it produces a
+    model that does that work. Everything happens in a web console — you never
+    write training code.
+  </p>
+
+  <dl class="def">
+    <dt>Small language model (SLM)</dt>
+    <dd>
+      A language model with roughly 0.1 to 5 billion parameters, rather than the
+      hundreds of billions in a frontier model.
+      <span class="plain">In plain terms: a model small enough to run on your own
+      hardware, cheap enough to call constantly, and narrow enough that it can be
+      genuinely excellent at one job rather than passable at everything.</span>
+    </dd>
+    <dt>Fine-tuning</dt>
+    <dd>
+      Taking a model that already understands language and adjusting it on your
+      examples so it does your specific task.
+      <span class="plain">In plain terms: you are not teaching it English. You are
+      teaching it your house style, your terminology, and what a good answer looks
+      like where you work.</span>
+    </dd>
+  </dl>
+
+  <h3>Why bother, when a frontier model can already do it?</h3>
+  <p>Three reasons people actually reach for this:</p>
+  <ul>
+    <li><strong>Cost and latency.</strong> A 0.5B model answering in 80&nbsp;ms for a
+      fraction of a cent behaves differently in a product than a frontier model
+      answering in two seconds. Some features only exist at the cheap end.</li>
+    <li><strong>The data cannot leave.</strong> A self-hosted small model keeps
+      regulated or confidential material inside your perimeter.</li>
+    <li><strong>Consistency.</strong> A model fine-tuned on ten thousand of your own
+      examples will match your conventions more reliably than any prompt.</li>
+  </ul>
+
+  <div class="note">
+    <span class="label">What it is not</span>
+    SLM Foundry does not train models from scratch, and it will not make a 0.5B
+    model match a frontier model at open-ended reasoning. It makes a small model
+    very good at <em>your</em> task.
+  </div>
+
+  <h3>The shape of the work</h3>
+  <p>
+    Every project follows the same arc. You will not do all of it on day one —
+    stages 1 and 2 alone are often enough.
+  </p>
+  <pre><code>1. Data        upload examples of the task
+2. Fine-tune   teach the base model from those examples          (SFT)
+3. Feedback    show people pairs of answers, ask which is better
+4. Align       train on those preferences               (DPO / PPO / GRPO / GSPO)
+5. Benchmark   score the result on data it has never seen
+6. Promote     mark a version as production
+        ↑                                                     │
+        └───────────── next round of feedback ────────────────┘</code></pre>
+</section>
+
+<section id="vocabulary" data-level="beginner">
+  <div class="section-head">
+    <h2>The words you need</h2><span class="chip beginner">Beginner</span>
+  </div>
+  <div class="rule"></div>
+  <p>Six terms cover almost everything in the console.</p>
+
+  <dl class="def">
+    <dt>Dataset</dt>
+    <dd>
+      A file of examples you upload. Comes in four kinds, covered later.
+      <span class="plain">Frozen once accepted — so a model can always say exactly
+      what it was trained on.</span>
+    </dd>
+    <dt>Run</dt>
+    <dd>
+      One training attempt: a method, a base model, some data, and settings.
+      <span class="plain">If it succeeds it produces a model version.</span>
+    </dd>
+    <dt>Job</dt>
+    <dd>
+      A unit of background work waiting for a machine. Runs, evaluations and
+      candidate generation are all jobs.
+      <span class="plain">Why this matters: closing your browser does not stop
+      anything. Work happens on shared workers, not in your tab.</span>
+    </dd>
+    <dt>Model version</dt>
+    <dd>
+      A trained artifact with a version number, its scores, and a record of what
+      produced it.
+      <span class="plain">Versions are numbered per name, so
+      <code>support-bot v1</code>, <code>v2</code>, <code>v3</code>.</span>
+    </dd>
+    <dt>Review batch</dt>
+    <dd>
+      A campaign that samples prompts, generates candidate answers, and puts them
+      in front of people to compare.
+      <span class="plain">This is how opinions become training data.</span>
+    </dd>
+    <dt>Preference pair</dt>
+    <dd>
+      One prompt with a better answer and a worse answer.
+      <span class="plain">The universal currency here — every alignment method
+      consumes exactly this.</span>
+    </dd>
+  </dl>
+</section>
+
+<section id="first-run" data-level="beginner">
+  <div class="section-head">
+    <h2>Your first fine-tune</h2><span class="chip beginner">Beginner</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    Start with supervised fine-tuning on demonstrations. It is the foundation:
+    every other method assumes a model that is already competent, and improves it.
+  </p>
+
+  <ol class="steps">
+    <li>
+      <strong>Prepare your examples</strong>
+      Make a <code>.jsonl</code> file — one JSON object per line — where each line
+      is a question and the answer you wish the model had given.
+      <pre><code>{<span class="s">"prompt"</span>: <span class="s">"What's the policy on expense reimbursement?"</span>,
+ <span class="s">"completion"</span>: <span class="s">"Receipts are required above $25, filed within 60 days."</span>}
+{<span class="s">"prompt"</span>: <span class="s">"How does parental leave work?"</span>,
+ <span class="s">"completion"</span>: <span class="s">"Sixteen weeks at full pay, any time in the first year."</span>}</code></pre>
+      <p><strong>How many do you need?</strong> Around 50 will show you something.
+      500–2,000 is where a narrow task starts working properly. More helps, but
+      variety helps more than volume — a hundred genuinely different questions
+      beat a thousand rephrasings of ten.</p>
+    </li>
+    <li>
+      <strong>Upload it</strong>
+      <em>Data</em> tab → drop the file → give it a name → set <strong>Kind</strong>
+      to <code>sft</code> → <em>Upload &amp; validate</em>.
+      <p>Every row is checked immediately. Malformed rows are dropped and listed
+      with their line numbers rather than failing the whole upload, so you find
+      out here instead of forty minutes into training.</p>
+    </li>
+    <li>
+      <strong>Launch the run</strong>
+      <em>Train</em> tab → <em>New run</em> → pick
+      <strong>Supervised fine-tuning</strong> → choose a base model → select your
+      dataset → <em>Queue run</em>.
+      <p>Leave every hyperparameter alone the first time. The defaults are sensible
+      and you cannot judge a change without a baseline.</p>
+    </li>
+    <li>
+      <strong>Watch it</strong>
+      Click the run to open its panel: a live log, loss curves, and sample
+      generations. You can close the browser; it keeps going.
+    </li>
+    <li>
+      <strong>Try it</strong>
+      <em>Models</em> tab → your new version → <em>Try it</em>. Tick
+      <strong>compare against the base model</strong> to see the same model with
+      your training switched off, side by side. That comparison is the honest one:
+      nothing differs except the fine-tune.
+    </li>
+  </ol>
+
+  <div class="key">
+    <span class="label">The one thing to get right</span>
+    Your examples define the target. If they are inconsistent — two answers to the
+    same question in different styles — the model learns to be inconsistent. Time
+    spent making demonstrations uniform pays back more than any hyperparameter.
+  </div>
+</section>
+
+<section id="reading-results" data-level="beginner">
+  <div class="section-head">
+    <h2>Reading your results</h2><span class="chip beginner">Beginner</span>
+  </div>
+  <div class="rule"></div>
+  <p>The run panel shows numbers that fall into three groups.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Metric</th><th>What it means</th><th>What you want</th></tr></thead>
+    <tbody>
+      <tr><td><code>loss</code></td>
+        <td>How surprised the model was by the correct answer.</td>
+        <td>Falling, then flattening.</td></tr>
+      <tr><td><code>val_loss</code></td>
+        <td>The same, on examples held back from training.</td>
+        <td>Falling with <code>loss</code>. If it turns upward while
+            <code>loss</code> keeps falling, the model is memorising —
+            <em>stop and use fewer epochs.</em></td></tr>
+      <tr><td><code>val_token_acc</code></td>
+        <td>How often it would have picked the exact next word.</td>
+        <td>Rising. Low is not fatal — there are many good phrasings.</td></tr>
+      <tr><td><code>grad_norm</code></td>
+        <td>The size of each update.</td>
+        <td>Steady. Wild spikes mean the learning rate is too high.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Numbers are not the point — read the samples</h3>
+  <p>
+    Every run captures generations on held-out prompts. A run whose loss fell
+    beautifully while its outputs got worse is a real and common event, and the
+    samples are the only place you will see it. Read them first.
+  </p>
+
+  <div class="warn-box">
+    <span class="label">The amber “tiny backend” tag</span>
+    <p>If a run is tagged <strong>tiny backend</strong>, the base model you asked
+    for was not available on the machine, so training ran against a
+    randomly-initialised stand-in.</p>
+    <p>The training itself was completely real — the same mathematics, the same
+    code path. But the model started from noise, so <strong>the quality numbers
+    mean nothing</strong> and the generations will be gibberish. It is there so
+    you can exercise the whole pipeline before committing hardware. Download the
+    base model, or set the backend explicitly, to get real results.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════ INTERMEDIATE ═══ -->
+
+<section id="datasets" data-level="intermediate">
+  <div class="section-head">
+    <h2>The four kinds of data</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    Each kind answers a different question, and each method demands a particular
+    kind. Upload JSONL (one object per line) or a JSON array.
+  </p>
+
+  <h3><code>sft</code> — demonstrations</h3>
+  <p>“Here is a good answer.” Used by supervised fine-tuning. Three accepted shapes:</p>
+  <pre><code>{<span class="s">"prompt"</span>: <span class="s">"…"</span>, <span class="s">"completion"</span>: <span class="s">"…"</span>}
+
+{<span class="s">"messages"</span>: [{<span class="s">"role"</span>:<span class="s">"user"</span>,<span class="s">"content"</span>:<span class="s">"…"</span>},
+              {<span class="s">"role"</span>:<span class="s">"assistant"</span>,<span class="s">"content"</span>:<span class="s">"…"</span>}]}
+
+{<span class="s">"messages"</span>: [{<span class="s">"role"</span>:<span class="s">"system"</span>,<span class="s">"content"</span>:<span class="s">"…"</span>},
+              {<span class="s">"role"</span>:<span class="s">"user"</span>,<span class="s">"content"</span>:<span class="s">"…"</span>}],
+ <span class="s">"completion"</span>: <span class="s">"…"</span>}</code></pre>
+
+  <h3><code>preference</code> — comparisons</h3>
+  <p>“This answer beats that one.” Used by DPO and by reward models.</p>
+  <pre><code>{<span class="s">"prompt"</span>: <span class="s">"…"</span>, <span class="s">"chosen"</span>: <span class="s">"…"</span>, <span class="s">"rejected"</span>: <span class="s">"…"</span>, <span class="s">"margin"</span>: <span class="n">0.8</span>}</code></pre>
+  <p>
+    <code>margin</code> is optional, between 0 and 1: how much better the chosen
+    answer is. A landslide gets 1.0, a close call gets 0.3, and the training loss
+    weights the pair accordingly. You usually do not write these by hand — the
+    review console produces them.
+  </p>
+
+  <h3><code>prompts</code> — questions without answers</h3>
+  <p>
+    “Here are the things people ask.” Used by every reinforcement-learning method
+    (which generates its own answers and scores them) and by review batches.
+  </p>
+  <pre><code>{<span class="s">"prompt"</span>: <span class="s">"…"</span>, <span class="s">"meta"</span>: {<span class="s">"topic"</span>: <span class="s">"…"</span>}}</code></pre>
+
+  <h3><code>benchmark</code> — the exam</h3>
+  <p>
+    “Here is how we will judge it.” Never trained on. Whatever fields you supply
+    determine how it is scored:
+  </p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Fields</th><th>Scored by</th></tr></thead>
+    <tbody>
+      <tr><td><code>choices</code> + <code>answer</code></td>
+        <td><strong>Accuracy.</strong> The model rates each option and the highest
+            wins — it is not asked to write the answer out, so it cannot be marked
+            wrong for phrasing.</td></tr>
+      <tr><td><code>reference</code></td>
+        <td><strong>Exact match</strong> and <strong>token F1</strong> (word
+            overlap with the reference).</td></tr>
+      <tr><td><code>rubric</code></td>
+        <td><strong>Judge score</strong> — a model grades against your rubric.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="key">
+    <span class="label">Build the benchmark first</span>
+    Fifty held-out examples written before you start training are worth more than
+    any amount of tuning afterwards. Without them you have no way to tell an
+    improvement from a change.
+  </div>
+
+  <h3>What validation does to your upload</h3>
+  <ul>
+    <li><strong>Normalises</strong> every shape into one internal form.</li>
+    <li><strong>Deduplicates</strong> identical rows silently and reports the count
+        — this is why 140 uploaded rows may become 121.</li>
+    <li><strong>Drops</strong> malformed rows with line numbers and reasons.</li>
+    <li><strong>Freezes</strong> the file. Corrections upload as a new version.</li>
+  </ul>
+</section>
+
+<section id="review" data-level="intermediate">
+  <div class="section-head">
+    <h2>Teaching by comparison</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    Demonstrations have a ceiling. Writing the ideal answer to every question is
+    expensive, and for questions of tone or judgement there is no single right
+    answer to write. Comparison is cheaper and often more informative: people are
+    far better at picking the better of two answers than at producing the best one.
+  </p>
+
+  <h3>Running a batch</h3>
+  <ol class="steps">
+    <li><strong>Create it</strong>
+      <em>Review → Batches → New batch</em>. Pick a <code>prompts</code> dataset
+      and the model to sample from.</li>
+    <li><strong>Candidates are generated</strong>
+      The model answers each prompt several times at temperature 1.0 — deliberately
+      varied, because two near-identical answers give a reviewer nothing to choose
+      between.</li>
+    <li><strong>People review</strong>
+      <em>Review → Review queue</em>. Keyboard driven:
+      <code>1</code>/<code>2</code> to pick, <code>T</code> for a tie,
+      <code>B</code> for both bad, <code>S</code> to skip, <code>Enter</code> to
+      submit.</li>
+    <li><strong>Assemble the pairs</strong>
+      <em>Batches → Build pairs</em> turns the verdicts into preference pairs.</li>
+  </ol>
+
+  <h3>Settings that matter</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Candidates per prompt</td>
+        <td>2 is the standard A/B. More produces more pairs per prompt but takes
+            longer to judge.</td></tr>
+      <tr><td>Reviewers per item</td>
+        <td>1 is fastest. 2+ lets the system measure agreement and weight
+            contested items lower. Use ≥2 for anything you will act on.</td></tr>
+      <tr><td>AI pre-labelling</td>
+        <td>0 = humans only. Above 0, a judge model also labels that fraction, and
+            the overlap measures the judge against your people. At 1.0 every item
+            gets an AI opinion.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Why the console behaves the way it does</h3>
+  <ul>
+    <li><strong>Ties are a real answer.</strong> Forcing a preference between two
+        equally good answers manufactures a label that looks exactly like a real
+        one. Ties are recorded and then excluded.</li>
+    <li><strong>The AI's answer stays collapsed.</strong> A reviewer who reads it
+        first is confirming it, not judging — and the whole point of the overlap is
+        to measure the judge independently.</li>
+    <li><strong>Answer order is shuffled per reviewer</strong>, so two people do not
+        share the same position bias.</li>
+    <li><strong>“Sampling p” is shown to you</strong> because the queue deliberately
+        favours informative items. Recording the probability is what lets a
+        win-rate measured on reviewed items say anything about the ones nobody
+        reviewed.</li>
+    <li><strong>Disagreement escalates.</strong> When reviewers split badly the item
+        goes to a lead under <em>Adjudicate</em> rather than being settled by
+        majority-of-two.</li>
+  </ul>
+
+  <div class="note">
+    <span class="label">How many pairs?</span>
+    A few hundred will move a small model. One to five thousand is a solid round.
+    Quality dominates: 500 pairs your team agrees on beat 5,000 collected in a
+    hurry, because inconsistent preferences teach the model that the distinction
+    does not matter.
+  </div>
+</section>
+
+<section id="preference-training" data-level="intermediate">
+  <div class="section-head">
+    <h2>Training on preferences</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    With pairs in hand, use <strong>DPO</strong>. It is the most reliable way to
+    spend preference data: no reward model to train, no sampling loop, and far less
+    that can quietly go wrong than the reinforcement-learning methods.
+  </p>
+
+  <ol class="steps">
+    <li><strong>Train → New run → DPO</strong></li>
+    <li><strong>Leave “Training data” empty</strong> to use the pairs collected in
+      the review console, or select an uploaded <code>preference</code> dataset.</li>
+    <li><strong>Set “Start from” to your SFT model.</strong> This is the step people
+      miss. DPO <em>improves an existing policy</em>; pointed at a raw base model
+      it has far less to work with.</li>
+    <li><strong>Attach your benchmark</strong> so the finished model is scored
+      automatically.</li>
+  </ol>
+
+  <h3>What to watch</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Metric</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr><td><code>reward_acc</code></td>
+        <td>How often the model now prefers what your reviewers preferred, on
+            training data. Climbs quickly; pinning at 1.0 means the gradient is
+            spent and more epochs only overfit.</td></tr>
+      <tr><td><code>heldout_pref_acc</code></td>
+        <td><strong>The number that matters.</strong> The same thing on pairs it
+            never trained on. Above 0.5 means it generalised.</td></tr>
+      <tr><td><code>logp_chosen</code></td>
+        <td>The trap. DPO only constrains the <em>difference</em> between the two
+            answers, so it will happily make the good answer less likely as long
+            as it makes the bad one less likely faster. If this falls steadily,
+            raise <code>beta</code> or set an auxiliary SFT weight.</td></tr>
+      <tr><td><code>implicit_kl</code></td>
+        <td>How far the model has drifted from where it started. Large values with
+            flat accuracy means it is wandering, not learning.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="warn-box">
+    <span class="label">If DPO destabilises</span>
+    Lower the learning rate first — DPO wants roughly an order of magnitude less
+    than SFT. Then raise <code>beta</code> from 0.1 toward 0.3 to keep the model
+    closer to its starting point. If your labels are noisy, set
+    <code>label_smoothing</code> to 0.1.
+  </div>
+</section>
+
+<section id="benchmark-promote" data-level="intermediate">
+  <div class="section-head">
+    <h2>Benchmarking and promoting</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+
+  <h3>Scoring a model</h3>
+  <p>
+    Attach a benchmark to a run and it is scored automatically when training
+    finishes. Otherwise: <em>Models → the version → Run evaluation</em>. The
+    <strong>Leaderboard</strong> ranks every model scored on one benchmark —
+    deliberately one at a time, because ranking models by scores from different
+    datasets is the most common way a registry misleads the people reading it.
+  </p>
+
+  <div class="note">
+    <span class="label">Watch <code>degenerate_rate</code></span>
+    The share of answers that collapsed into repetition or never stopped. Both are
+    common fine-tuning failures that leave the headline metric looking unremarkable
+    rather than obviously broken.
+  </div>
+
+  <h3>The lifecycle</h3>
+  <pre><code>draft ──▶ evaluated ──▶ staging ──▶ production
+                                        │
+                       (next promotion) ▼
+                                     archived</code></pre>
+  <ul>
+    <li><strong>draft</strong> — trained, never scored. Cannot go to production.</li>
+    <li><strong>evaluated</strong> — has a benchmark score.</li>
+    <li><strong>staging</strong> — a candidate.</li>
+    <li><strong>production</strong> — one per name at a time. Promoting a new
+        version archives the incumbent in the same transaction.</li>
+  </ul>
+  <p>
+    Promotion requires the <strong>lead</strong> role, copies the artifact to a
+    directory that is never written again, and is recorded in a tamper-evident
+    audit log. <strong>Lineage</strong> on each model walks the chain back — DPO →
+    SFT → base — so “what produced this?” is a question with an answer.
+  </p>
+</section>
+
+<section id="teams-queue" data-level="intermediate">
+  <div class="section-head">
+    <h2>Teams, roles and the queue</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+
+  <h3>Roles</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Role</th><th>Can do</th></tr></thead>
+    <tbody>
+      <tr><td><code>viewer</code></td><td>Read everything in their team.</td></tr>
+      <tr><td><code>member</code></td><td>+ upload data, launch and cancel runs.</td></tr>
+      <tr><td><code>reviewer</code></td><td>+ annotate in the review queue.</td></tr>
+      <tr><td><code>lead</code></td><td>+ adjudicate disagreements, promote models.</td></tr>
+      <tr><td><code>admin</code></td><td>+ manage teams, quotas and users.</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    Everything is scoped to your team. Another team's datasets, runs and models are
+    invisible; only their <em>job counts</em> show on the Queue tab, so you can see
+    the cluster is busy without seeing what it is busy with.
+  </p>
+
+  <h3>How work gets scheduled</h3>
+  <p>
+    Jobs run on shared workers. Scheduling is <strong>fair-share, not first-come</strong>:
+    candidates are ordered by how many jobs your team already has running
+    <em>before</em> priority is considered. A team that queues 400 jobs overnight
+    cannot monopolise the cluster, and a team with nothing running always gets the
+    next free worker.
+  </p>
+  <p>
+    Cancelling is cooperative — the trainer stops at the next step boundary rather
+    than being killed mid-update, which would leave a corrupt checkpoint. Expect a
+    few seconds.
+  </p>
+
+  <div class="warn-box">
+    <span class="label">“No live workers”</span>
+    If the Queue tab says this, jobs will pile up and never start. Someone needs to
+    run <code>python -m foundry.worker</code>. Nothing is lost — queued work begins
+    as soon as a worker appears.
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ ADVANCED ═══ -->
+
+<section id="choosing-method" data-level="advanced">
+  <div class="section-head">
+    <h2>Choosing an alignment method</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    Five methods can consume preference signal. They are not interchangeable, and
+    the differences are practical rather than theoretical. The
+    <a href="methods.html">Methods manual</a> covers the mathematics; this is how to
+    pick.
+  </p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Method</th><th>Needs</th><th>Reach for it when</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr><td><strong>DPO</strong></td>
+        <td>preference pairs</td>
+        <td>Default. You have pairs and want them spent reliably.</td>
+        <td>Lowest — one pass per pair, no sampling.</td></tr>
+      <tr><td><strong>GRPO</strong></td>
+        <td>prompts + a reward signal</td>
+        <td>You can <em>score</em> an answer but have no pairs — a checkable answer,
+            a test suite, a judge.</td>
+        <td>High — G samples per prompt per step.</td></tr>
+      <tr><td><strong>GSPO</strong></td>
+        <td>prompts + a reward signal</td>
+        <td>Same as GRPO, but your outputs are long (hundreds of tokens) or GRPO
+            was unstable.</td>
+        <td>Same as GRPO.</td></tr>
+      <tr><td><strong>PPO</strong></td>
+        <td>prompts + a trained reward model</td>
+        <td>You need maximum control and have the budget to tune it.</td>
+        <td>Highest — sampling plus a critic.</td></tr>
+      <tr><td><strong>RLAIF</strong></td>
+        <td>prompts + a policy</td>
+        <td>You cannot get enough human labels. Replaces the labelling step, then
+            hands the pairs to one of the above.</td>
+        <td>API cost per rollout.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="key">
+    <span class="label">A sane progression</span>
+    SFT → collect a few hundred pairs → DPO → benchmark. Only if DPO plateaus and
+    you have a genuine scoring function should you reach for GRPO or GSPO. PPO
+    last, and only if you know why the others were not enough.
+  </div>
+
+  <h3>GRPO or GSPO?</h3>
+  <p>
+    They share everything except where the correction is applied. Reward is a
+    <em>whole-answer</em> judgement, but GRPO applies a per-token correction to it,
+    so a 500-token answer accumulates 500 independently noisy adjustments against a
+    single score — and one freak token can dominate the update. GSPO makes one
+    correction per answer.
+  </p>
+  <ul>
+    <li>Short outputs (under ~100 tokens), single update pass: <strong>GRPO</strong>.</li>
+    <li>Long outputs, or several update passes per batch: <strong>GSPO</strong>.</li>
+    <li>GRPO training that collapses or spikes for no visible reason:
+        <strong>switch to GSPO</strong> before tuning anything else.</li>
+  </ul>
+  <div class="warn-box">
+    <span class="label">Do not copy clip ranges between them</span>
+    GSPO's ratios are length-normalised and sit extremely close to 1.0, so its
+    defaults are around <code>0.0003</code> where PPO and GRPO use <code>0.2</code>.
+    That is the <em>equivalent</em> strictness, not a typo. Pasting 0.2 into GSPO
+    disables clipping entirely. If the run warns that nearly every sequence is
+    being clipped, lower the learning rate rather than widening the range.
+  </div>
+</section>
+
+<section id="reward-sources" data-level="advanced">
+  <div class="section-head">
+    <h2>Where reward comes from</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    The RL methods need a number for each generated answer. Three sources, chosen
+    automatically in this order:
+  </p>
+
+  <ol class="steps">
+    <li><strong>A trained reward model</strong>
+      If you attach one. Highest fidelity to what your reviewers actually said.
+      <em>Weakness:</em> it goes stale — as the policy improves it produces answers
+      unlike anything the scorer was fitted on, and the score drifts from reality.</li>
+    <li><strong>A verifier</strong>
+      Used automatically when at least half your prompts carry a reference answer.
+      Word overlap plus a bonus for an exact match. <em>Strength:</em> free per
+      rollout and impossible to game. <em>Limit:</em> only works for checkable tasks.</li>
+    <li><strong>A judge model</strong>
+      The fallback. Never stale, costs money per rollout. Without an API key it
+      degrades to <code>heuristic-v1</code>, a mechanical scorer that is labelled as
+      such everywhere so it cannot be mistaken for a model's opinion.</li>
+  </ol>
+
+  <p>
+    Whichever is used, the run log states it on the first line. All three are
+    normalised to roughly 0–1 before reaching the optimiser — KL coefficients and
+    clip ranges are tuned against an assumed reward scale, so an unnormalised
+    source would silently change the effective strength of every other setting.
+  </p>
+
+  <div class="warn-box">
+    <span class="label">Reward hacking</span>
+    Any learned reward model can be gamed, and a policy optimised hard enough will
+    find how. The classic tell is length — answers growing steadily while the
+    reward climbs. Watch <code>completion_len</code> next to <code>reward</code>,
+    and check <code>length_bias_corr</code> on the reward model itself. The KL
+    penalty is the main defence; if reward is climbing while KL explodes, the model
+    has not improved, it has found a bug.
+  </div>
+</section>
+
+<section id="rlaif" data-level="advanced">
+  <div class="section-head">
+    <h2>RLAIF and auditing the judge</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    RLAIF replaces the <em>labelling</em> step, not the optimiser. A judge model
+    ranks sampled candidates into preference pairs, and then DPO, GRPO or GSPO
+    consumes them exactly as it would human pairs. This is why
+    <strong>Optimiser</strong> is a visible setting: “we used RLAIF” says nothing
+    about how the weights actually moved.
+  </p>
+
+  <h3>The three safeguards</h3>
+  <ul>
+    <li><strong>Position debiasing.</strong> Judges favour whichever answer they read
+      first. Every comparison is scored in both orders and averaged. When the two
+      orders disagree the verdict becomes a tie rather than a coin flip, and the
+      <em>flip rate</em> is reported. Above ~25% the judge is largely responding to
+      presentation order and its labels are weak evidence.</li>
+    <li><strong>A minimum margin.</strong> Pairs the judge could barely separate are
+      discarded. A forced verdict between equivalent answers is noise with a label
+      attached — worse than no data, because it is indistinguishable from signal.</li>
+    <li><strong>A human spot-check.</strong> A fraction of judged pairs is queued for
+      real people. Without this the judge is unfalsifiable: nothing in the system
+      would ever disagree with it.</li>
+  </ul>
+
+  <h3>Reading the Agreement tab</h3>
+  <p>
+    Raw agreement is not the number to trust. On a two-way choice, two people
+    guessing randomly agree 50% of the time, so 60% agreement looks respectable and
+    means almost nothing. <strong>Cohen's kappa</strong> corrects for that.
+  </p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Kappa</th><th>Interpretation</th></tr></thead>
+    <tbody>
+      <tr><td>&lt; 0.2</td><td>Barely better than chance. Do not train on these labels.</td></tr>
+      <tr><td>0.2 – 0.4</td><td>Weak. Usable with a large human spot-check.</td></tr>
+      <tr><td>0.4 – 0.6</td><td>Moderate. Reasonable for scaling up labelling.</td></tr>
+      <tr><td>&gt; 0.6</td><td>Strong. The judge tracks your reviewers well.</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    If kappa is low, the usual cause is not a weak judge but an underspecified
+    question. Sharpen the rubric so it grades something visible in the text.
+  </p>
+</section>
+
+<section id="tuning" data-level="advanced">
+  <div class="section-head">
+    <h2>Tuning hyperparameters</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+  <p>Change one thing at a time, against a fixed benchmark. In rough order of impact:</p>
+
+  <h3>SFT</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Move it when</th></tr></thead>
+    <tbody>
+      <tr><td><code>epochs</code></td><td>3</td>
+        <td>Down if <code>val_loss</code> turns upward. Up (to 5–8) for very small
+            datasets.</td></tr>
+      <tr><td><code>learning_rate</code></td><td>2e-4</td>
+        <td>Down 3–5× if <code>grad_norm</code> spikes or loss oscillates. This is a
+            LoRA-scale rate — roughly 10× a full fine-tune.</td></tr>
+      <tr><td><code>LoRA r</code></td><td>16</td>
+        <td>Up to 32–64 for a substantial style or domain shift. 8 is plenty for
+            format-following.</td></tr>
+      <tr><td><code>max_seq_len</code></td><td>1024</td>
+        <td>Long enough for your longest example — the <em>prompt</em> is truncated
+            from the left, never the answer.</td></tr>
+      <tr><td><code>grad_accum</code></td><td>1</td>
+        <td>Up when you want a larger effective batch than memory allows.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>DPO</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Move it when</th></tr></thead>
+    <tbody>
+      <tr><td><code>beta</code></td><td>0.1</td>
+        <td>Up (0.2–0.5) if the model drifts or <code>logp_chosen</code> collapses.
+            Down (0.05) if it barely moves.</td></tr>
+      <tr><td><code>learning_rate</code></td><td>5e-6</td>
+        <td>Down first whenever DPO misbehaves.</td></tr>
+      <tr><td><code>loss_variant</code></td><td>sigmoid</td>
+        <td><code>ipo</code> resists overfitting on small or very clean sets.</td></tr>
+      <tr><td><code>label_smoothing</code></td><td>0</td>
+        <td>0.1–0.2 with crowd-sourced or contested labels.</td></tr>
+      <tr><td><code>sft_weight</code></td><td>0</td>
+        <td>0.1–1.0 to stop <code>logp_chosen</code> falling.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>GRPO / GSPO</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Move it when</th></tr></thead>
+    <tbody>
+      <tr><td><code>group_size</code></td><td>8</td>
+        <td>The baseline is the group's own mean, so below ~4 the advantage is
+            mostly noise. Raise it if the log reports degenerate groups.</td></tr>
+      <tr><td><code>kl_coef</code></td><td>0.04</td>
+        <td>Up if the model drifts or starts reward-hacking. Down if it will not
+            move at all.</td></tr>
+      <tr><td><code>temperature</code></td><td>1.0</td>
+        <td>Below ~0.8 the group collapses to identical samples and there is
+            nothing to compare.</td></tr>
+      <tr><td><code>mu</code></td><td>1 / 2</td>
+        <td>GRPO: 1 keeps it exactly on-policy. GSPO: >1 is where it earns its
+            keep.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <span class="label">A degenerate group</span>
+    All G samples scored identically, so there is nothing to prefer and the update
+    contributes zero. A few are normal. All of them means your reward source cannot
+    distinguish the model's outputs — fix that before touching anything else.
+  </div>
+</section>
+
+<section id="production" data-level="advanced">
+  <div class="section-head">
+    <h2>Running it for real</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+
+  <h3>Database</h3>
+  <p>
+    SQLite is the default and is fine for one worker. Move to Postgres as soon as
+    you run more than one:
+  </p>
+  <pre><code>export FOUNDRY_DATABASE_URL=postgresql+psycopg://host/foundry</code></pre>
+
+  <h3>Split your workers by job kind</h3>
+  <p>
+    The single most effective operational change. Interactive work — generating
+    candidates for a reviewer who is waiting — should never queue behind an
+    overnight retrain.
+  </p>
+  <pre><code><span class="c"># GPU box: training only</span>
+python -m foundry.worker --kinds train
+
+<span class="c"># small box: everything interactive</span>
+python -m foundry.worker --kinds generate,judge,eval,assemble</code></pre>
+
+  <h3>Environment</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>FOUNDRY_DATABASE_URL</code></td><td>local SQLite</td><td>Where state lives.</td></tr>
+      <tr><td><code>FOUNDRY_DATA_DIR</code></td><td><code>./var</code></td><td>Uploads, artifacts, promoted models.</td></tr>
+      <tr><td><code>FOUNDRY_BACKEND</code></td><td><code>auto</code></td>
+        <td><code>torch</code> fails loudly instead of falling back to the tiny model.
+            Set this in production.</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>—</td><td>Enables the real judge.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What survives a crash</h3>
+  <p>
+    A worker holds each job on a lease it must keep renewing. If it is killed,
+    OOMs, or drops off the network, the lease expires and the job is requeued
+    automatically — and the dead worker's late writes are rejected. You lose one
+    job's progress, never the queue and never someone else's work.
+  </p>
+
+  <div class="warn-box">
+    <span class="label">Before exposing this publicly</span>
+    Passwords are hashed with PBKDF2 from the standard library — deliberate, to
+    avoid a native dependency, and the first thing to replace with argon2id or an
+    SSO integration. Session tokens are already stored only as hashes, so a
+    database dump does not hand over live sessions.
+  </div>
+</section>
+
+<section id="troubleshooting" data-level="advanced">
+  <div class="section-head">
+    <h2>Troubleshooting</h2><span class="chip advanced">Advanced</span>
+  </div>
+  <div class="rule"></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Symptom</th><th>Likely cause and fix</th></tr></thead>
+    <tbody>
+      <tr><td>Jobs stay queued forever</td>
+        <td>No live worker. Check the Queue tab; start one.</td></tr>
+      <tr><td>Run failed: “no training data”</td>
+        <td>No dataset attached and no preference pairs collected. Attach one, or
+            build pairs from a review batch.</td></tr>
+      <tr><td>Run tagged “tiny backend” unexpectedly</td>
+        <td>The base model is not present locally. Download it, or set
+            <code>FOUNDRY_BACKEND=torch</code> to fail loudly instead.</td></tr>
+      <tr><td>Upload accepted far fewer rows than expected</td>
+        <td>Deduplication. Identical rows are dropped and counted — check the
+            dataset's statistics.</td></tr>
+      <tr><td><code>val_loss</code> rising while <code>loss</code> falls</td>
+        <td>Overfitting. Fewer epochs, lower LoRA rank, or more data.</td></tr>
+      <tr><td><code>logp_chosen</code> falling during DPO</td>
+        <td>Both likelihoods collapsing. Raise <code>beta</code> or set
+            <code>sft_weight</code> to 0.1–1.0.</td></tr>
+      <tr><td>Reward climbing but outputs look worse</td>
+        <td>Reward hacking. Check <code>completion_len</code> and KL; raise
+            <code>kl_coef</code>.</td></tr>
+      <tr><td>GSPO warns nearly everything is clipped</td>
+        <td>Learning rate too high for the clip range. Lower it — do not widen the
+            range.</td></tr>
+      <tr><td>Every group is degenerate</td>
+        <td>Reward source cannot separate the outputs, or temperature is too low.</td></tr>
+      <tr><td>Review queue empty but items remain</td>
+        <td>You have already been assigned them all; they are waiting on other
+            reviewers.</td></tr>
+      <tr><td>Cannot promote to production</td>
+        <td>The version is still <code>draft</code> — benchmark it first. Promotion
+            also needs the <code>lead</code> role.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="glossary" data-level="always">
+  <div class="section-head"><h2>Glossary</h2></div>
+  <div class="rule"></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Adapter</strong></td><td>The small set of trained weights LoRA
+        produces. Your fine-tune is an adapter sitting on top of an unchanged base
+        model.</td></tr>
+      <tr><td><strong>Base model</strong></td><td>The pretrained model you start from.</td></tr>
+      <tr><td><strong>Epoch</strong></td><td>One full pass over the training data.</td></tr>
+      <tr><td><strong>Held-out</strong></td><td>Data deliberately never trained on, so
+        scores on it mean something.</td></tr>
+      <tr><td><strong>KL divergence</strong></td><td>A measure of how far the tuned
+        model has moved from its starting point. Used as a brake.</td></tr>
+      <tr><td><strong>LoRA</strong></td><td>Low-Rank Adaptation. Trains a small number
+        of extra weights instead of all of them — far cheaper, and the result is a
+        few megabytes.</td></tr>
+      <tr><td><strong>Loss</strong></td><td>How wrong the model was. Training minimises it.</td></tr>
+      <tr><td><strong>Policy</strong></td><td>The model being trained, in
+        reinforcement-learning language.</td></tr>
+      <tr><td><strong>Propensity</strong></td><td>The probability an item had of being
+        shown to a reviewer. Recorded so biased sampling can be corrected for.</td></tr>
+      <tr><td><strong>Reference model</strong></td><td>A frozen copy of where you
+        started, used to measure and limit drift.</td></tr>
+      <tr><td><strong>Reward model</strong></td><td>A model trained to score answers,
+        standing in for a human.</td></tr>
+      <tr><td><strong>Rollout</strong></td><td>One generated answer produced during
+        reinforcement learning.</td></tr>
+      <tr><td><strong>Temperature</strong></td><td>Sampling randomness. 0 is always the
+        most likely word; 1.0 is varied.</td></tr>
+      <tr><td><strong>Token</strong></td><td>A word-piece. Models read and write these,
+        not characters.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<div class="no-results" id="no-results" hidden>
+  <p><strong>Nothing matches that search.</strong></p>
+  <p>Try a method name (<code>DPO</code>, <code>GRPO</code>), a metric
+     (<code>val_loss</code>, <code>kappa</code>), or a concept
+     (<code>overfitting</code>, <code>reward hacking</code>).</p>
+</div>
+
+<footer>
+  SLM Foundry user manual · see the <a href="methods.html">Methods manual</a> for the
+  mathematics behind each technique · press <code>/</code> to search
+</footer>
+</main>
+</div>
+
+<script src="manual.js"></script>
+</body>
+</html>

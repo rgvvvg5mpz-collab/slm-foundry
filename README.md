@@ -71,6 +71,18 @@ FOUNDRY_DATABASE_URL=postgresql+psycopg://db/foundry python -m foundry.worker --
 FOUNDRY_DATABASE_URL=postgresql+psycopg://db/foundry python -m foundry.worker --kinds generate,judge,eval,assemble
 ```
 
+## Documentation
+
+Two searchable manuals in [`docs/`](docs/) — open [`docs/index.html`](docs/index.html)
+in a browser, or go straight to one:
+
+| | |
+|---|---|
+| [**User manual**](docs/user-manual.html) | Operating the product, beginner → advanced. Vocabulary, your first fine-tune, reading results, the review console, choosing a method, tuning, troubleshooting. |
+| [**Methods manual**](docs/methods.html) | The techniques themselves, with the mathematics. LoRA, SFT, Bradley–Terry, DPO (+IPO/cDPO/RPO), PPO, GRPO, GSPO, RLAIF, reward functions, evaluation, review statistics. |
+
+Press `/` in either to search.
+
 ### Verify the whole thing
 
 ```bash

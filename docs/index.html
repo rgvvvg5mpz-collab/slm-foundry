@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Foundry — Documentation</title>
+<link rel="stylesheet" href="manual.css">
+<style>
+  .hero { max-width: 720px; margin: 0 auto; padding: 70px 24px 40px; }
+  .cards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+  @media (max-width: 720px) { .cards { grid-template-columns: minmax(0,1fr); } }
+  .card {
+    display: block; padding: 22px; text-decoration: none; color: inherit;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-sm);
+    transition: border-color .12s, transform .08s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); text-decoration: none; }
+  .card h3 { margin: 10px 0 6px; }
+  .card p { color: var(--text-3); font-size: 14px; margin: 0 0 12px; }
+  .card .in { font-size: 12.5px; color: var(--text-4); line-height: 1.7; }
+  .card .go { color: var(--accent); font-size: 13px; font-weight: 560; margin-top: 12px; display: block; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <span class="mark" aria-hidden="true" style="width:38px;height:38px;border-radius:11px"></span>
+  <h1 style="margin-top:16px">SLM Foundry documentation</h1>
+  <p class="lede">
+    Bring your data, get a fine-tuned small language model. Two manuals: one for
+    operating the product, one for the techniques inside it. Both are searchable —
+    press <code>/</code> on either.
+  </p>
+
+  <div class="cards">
+    <a class="card" href="user-manual.html">
+      <span class="chip beginner">Beginner → Advanced</span>
+      <h3>User Manual</h3>
+      <p>How to go from a folder of examples to a model in production, using only
+         the web console.</p>
+      <span class="in">
+        Core vocabulary · your first fine-tune · reading results<br>
+        the four dataset kinds · the review console · DPO<br>
+        benchmarking · choosing a method · tuning · troubleshooting
+      </span>
+      <span class="go">Read the user manual →</span>
+    </a>
+
+    <a class="card" href="methods.html">
+      <span class="chip advanced">Technical</span>
+      <h3>Methods Manual</h3>
+      <p>What each technique optimises, why it is built that way, and how it fails.
+         With the mathematics.</p>
+      <span class="in">
+        LoRA · SFT · Bradley–Terry reward models<br>
+        DPO, IPO, cDPO, RPO · PPO · GRPO · GSPO · RLAIF<br>
+        reward functions · evaluation · review statistics
+      </span>
+      <span class="go">Read the methods manual →</span>
+    </a>
+  </div>
+
+  <p style="margin-top:34px;font-size:13.5px;color:var(--text-3)">
+    Not sure where to start? If you have never fine-tuned a model, read
+    <a href="user-manual.html#what-is-it">What SLM Foundry is</a> and follow
+    <a href="user-manual.html#first-run">Your first fine-tune</a>. If you are
+    choosing between DPO, GRPO and GSPO, jump to
+    <a href="methods.html#comparison">Side by side</a>.
+  </p>
+
+  <footer>SLM Foundry · <a href="../README.md">project README</a></footer>
+</div>
+</body>
+</html>

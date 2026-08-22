@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Foundry — Methods Manual</title>
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="mark" aria-hidden="true"></span>
+  <span class="brand">SLM&nbsp;Foundry <span class="doc">· Methods</span></span>
+  <nav class="docnav">
+    <a href="user-manual.html">Using it</a>
+    <a href="methods.html" class="here">Methods</a>
+  </nav>
+  <div class="search-wrap">
+    <span class="icon" aria-hidden="true">⌕</span>
+    <input id="search" type="search" placeholder="Search methods, maths, terms…" aria-label="Search">
+    <span class="slash">/</span>
+  </div>
+  <button class="btn" id="theme-toggle">Theme</button>
+</header>
+
+<div class="layout">
+<nav class="toc">
+  <h4>Foundations</h4>
+  <a href="#notation">Notation</a>
+  <a href="#lora">LoRA</a>
+  <a href="#sft">Supervised fine-tuning</a>
+
+  <h4>Preference learning</h4>
+  <a href="#bradley-terry">Bradley–Terry reward models</a>
+  <a href="#dpo">DPO</a>
+  <a href="#dpo-variants">IPO, hinge, cDPO, RPO</a>
+
+  <h4>Reinforcement learning</h4>
+  <a href="#rl-setup">The RLHF objective</a>
+  <a href="#ppo">PPO</a>
+  <a href="#grpo">GRPO</a>
+  <a href="#gspo">GSPO</a>
+  <a href="#comparison">Side by side</a>
+
+  <h4>Feedback</h4>
+  <a href="#rlaif">RLAIF</a>
+  <a href="#reward-fns">Reward functions</a>
+
+  <h4>Measurement</h4>
+  <a href="#evaluation">Evaluation metrics</a>
+  <a href="#review-stats">The statistics of review</a>
+  <a href="#reading">Further reading</a>
+</nav>
+
+<main>
+<h1>Methods Manual</h1>
+<p class="lede">
+  What each technique in SLM Foundry actually does, the objective it optimises,
+  where it is implemented, and how it fails. Assumes comfort with gradient descent
+  and basic probability; no reinforcement-learning background required.
+</p>
+
+<div class="filters" role="group" aria-label="Filter by category">
+  <button data-filter="all" class="on">Everything</button>
+  <button data-filter="foundation">Foundations</button>
+  <button data-filter="preference">Preference</button>
+  <button data-filter="rl">Reinforcement learning</button>
+  <button data-filter="feedback">Feedback</button>
+  <button data-filter="measure">Measurement</button>
+</div>
+<div class="search-status" id="search-status" hidden></div>
+
+<section id="notation" data-level="foundation">
+  <div class="section-head"><h2>Notation</h2><span class="chip">Foundations</span></div>
+  <div class="rule"></div>
+  <p>Used consistently throughout.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Symbol</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>A prompt.</td></tr>
+      <tr><td><code>y</code></td><td>A completion — the model's answer. <code>y_t</code> is its <em>t</em>-th token, <code>|y|</code> its length.</td></tr>
+      <tr><td><code>π_θ(y | x)</code></td><td>The <strong>policy</strong>: the model being trained, with parameters θ. Reads as “the probability this model assigns to answer <em>y</em> given prompt <em>x</em>”.</td></tr>
+      <tr><td><code>π_ref</code></td><td>The <strong>reference policy</strong>: a frozen copy of where training started. Used to measure and limit drift.</td></tr>
+      <tr><td><code>π_old</code></td><td>The <strong>behaviour policy</strong>: the parameters that produced the current batch of samples. Equals <code>π_θ</code> on the first update pass of each batch.</td></tr>
+      <tr><td><code>y_w , y_l</code></td><td>The preferred (<em>winning</em>) and dispreferred (<em>losing</em>) completion of a pair.</td></tr>
+      <tr><td><code>r(x, y)</code></td><td>A scalar reward for an answer.</td></tr>
+      <tr><td><code>A</code></td><td>Advantage — how much better an answer was than the baseline.</td></tr>
+      <tr><td><code>σ(z)</code></td><td>The logistic function <code>1 / (1 + e^−z)</code>.</td></tr>
+      <tr><td><code>β</code></td><td>Strength of the constraint keeping the policy near the reference.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">
+    <span class="label">One distinction worth fixing early</span>
+    <code>π_ref</code> and <code>π_old</code> are different things and are easy to
+    conflate. <code>π_ref</code> is fixed for an entire run and anchors the model to
+    its starting behaviour. <code>π_old</code> is refreshed every batch and exists
+    only to correct for the fact that samples were drawn from slightly stale
+    parameters. In SLM Foundry <code>π_ref</code> is obtained by switching the LoRA
+    adapters off — see below.
+  </div>
+</section>
+
+<section id="lora" data-level="foundation">
+  <div class="section-head"><h2>LoRA — Low-Rank Adaptation</h2><span class="chip">Foundations</span></div>
+  <div class="rule"></div>
+
+  <h3>What it is</h3>
+  <p>
+    A method for fine-tuning a large weight matrix by training a small additive
+    correction to it, leaving the original frozen. It is the reason fine-tuning a
+    1B-parameter model is possible on one consumer GPU.
+  </p>
+
+  <h3>The construction</h3>
+  <p>
+    For a frozen weight matrix <code>W ∈ ℝ^(d×k)</code>, LoRA learns two thin
+    matrices <code>A ∈ ℝ^(r×k)</code> and <code>B ∈ ℝ^(d×r)</code> with
+    <code>r ≪ min(d, k)</code>, and replaces the layer's output with:
+  </p>
+  <div class="math">h  =  W·x  +  (α / r) · B · A · x
+              └──────┬──────┘
+             the only trained part</div>
+  <p class="math-note">
+    <code>r</code> is the <em>rank</em> — the bottleneck width. <code>α</code> is a
+    scaling constant; the ratio <code>α/r</code> is what actually matters, which is
+    why doubling <code>r</code> is usually paired with doubling <code>α</code>.
+  </p>
+
+  <h3>Why it works</h3>
+  <p>
+    The empirical claim behind LoRA is that the <em>update</em> a fine-tune needs is
+    intrinsically low-rank, even though the weights themselves are not. Adapting a
+    model to a new domain shifts behaviour along a small number of directions;
+    <code>r</code> = 8–64 captures enough of them. You are not compressing the model,
+    you are compressing the <em>change</em> to it.
+  </p>
+
+  <h4>The initialisation is load-bearing</h4>
+  <p>
+    <code>A</code> is Kaiming-initialised and <strong><code>B</code> is set to
+    zero</strong>, so <code>B·A = 0</code> and training begins at
+    <em>exactly</em> the base model's behaviour. Initialise <code>B</code> randomly
+    and step zero is already a damaged model, with the first several hundred steps
+    spent undoing the damage.
+  </p>
+
+  <h3>The trick this enables</h3>
+  <div class="key">
+    <span class="label">Reference policy for free</span>
+    Because the adapter is purely additive and starts at zero, setting
+    <code>B·A = 0</code> again recovers the original weights <em>exactly</em>. So
+    <code>π_ref</code> is just this model with the adapters switched off — no second
+    copy in memory, and no possibility of drift between the reference you believe
+    you have and the one you compute against. Every preference method here relies
+    on it (<code>trainers/lora.py :: adapters_disabled()</code>).
+  </div>
+
+  <h3>Worked example</h3>
+  <p>
+    A 1.5B model with hidden size 1536. One attention projection is
+    <code>1536 × 1536 ≈ 2.36M</code> parameters. At <code>r = 16</code>:
+  </p>
+  <div class="math">A:  16 × 1536  =  24,576
+B:  1536 × 16  =  24,576
+    ────────────────────
+    total          49,152     ≈ 2.1% of that matrix</div>
+  <p class="math-note">
+    Across all targeted projections this typically lands around 0.1–1% of total
+    parameters trainable. The saved adapter is a few megabytes rather than several
+    gigabytes, so a registry can hold hundreds of variants cheaply.
+  </p>
+
+  <h3>Practical notes</h3>
+  <ul>
+    <li><strong>Which layers.</strong> Attention projections (<code>q,k,v,o</code>)
+      plus the MLP (<code>gate,up,down</code>). Embeddings and the output head are
+      deliberately excluded.</li>
+    <li><strong>Rank.</strong> 8 for format-following, 16 default, 32–64 for a real
+      domain shift. Higher rank overfits small datasets faster.</li>
+    <li><strong>Precision.</strong> Adapter maths is kept in fp32 even under a
+      half-precision base: the updates are small and low-rank, and fp16
+      accumulation eats them.</li>
+    <li><strong>Learning rate.</strong> Roughly 10× a full fine-tune — 2e-4 rather
+      than 2e-5 — because only a thin bottleneck is receiving the gradient.</li>
+  </ul>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/lora.py</code></p>
+</section>
+
+<section id="sft" data-level="foundation">
+  <div class="section-head"><h2>Supervised fine-tuning</h2><span class="chip">Foundations</span></div>
+  <div class="rule"></div>
+
+  <h3>Objective</h3>
+  <p>Maximise the likelihood of the demonstrated answer given the prompt:</p>
+  <div class="math">L_SFT(θ)  =  − (1 / Σ|y|) · Σ_examples Σ_t  log π_θ( y_t | x, y_&lt;t )</div>
+  <p class="math-note">
+    Plain cross-entropy over the answer's tokens. Everything interesting is in the
+    two design choices below.
+  </p>
+
+  <h3>Choice 1 — mask the prompt</h3>
+  <p>
+    The sum runs over the tokens of <code>y</code> only. Include the prompt and the
+    model spends most of its gradient learning to <em>generate your instructions</em>,
+    which is capacity spent on something you will never ask it to do. This is the
+    most common silent bug in a fine-tuning stack: nothing errors, the loss curve
+    looks fine, and the model is measurably worse.
+  </p>
+
+  <h3>Choice 2 — normalise by token, not by sequence</h3>
+  <p>
+    Dividing by the <em>total</em> token count across the batch rather than
+    averaging per-sequence losses. Under sequence-mean, a 4-token answer and a
+    400-token answer contribute equally, so each token of the short answer carries
+    100× the weight — which quietly turns your dataset into one dominated by its
+    shortest examples.
+  </p>
+
+  <h3>Failure modes</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Symptom</th><th>Cause</th><th>Response</th></tr></thead>
+    <tbody>
+      <tr><td><code>val_loss</code> rises while <code>loss</code> falls</td>
+        <td>Memorising the training set.</td>
+        <td>Fewer epochs, lower rank, more data.</td></tr>
+      <tr><td>Loss plateaus immediately</td>
+        <td>Learning rate too low, or LoRA matched no useful layers.</td>
+        <td>Raise LR; check <code>modules_replaced</code> in the run log.</td></tr>
+      <tr><td>Outputs never stop</td>
+        <td>Training examples lack a terminator.</td>
+        <td>Ensure EOS is appended — it is, automatically, so suspect truncation
+            instead.</td></tr>
+      <tr><td>Style copied, facts wrong</td>
+        <td>Working as designed.</td>
+        <td>SFT teaches form. Facts need retrieval or far more data.</td></tr>
+    </tbody>
+  </table></div>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/sft.py</code></p>
+</section>
+
+<section id="bradley-terry" data-level="preference">
+  <div class="section-head"><h2>Bradley–Terry reward models</h2><span class="chip">Preference</span></div>
+  <div class="rule"></div>
+
+  <h3>The model of preference</h3>
+  <p>
+    Bradley–Terry (1952) is a model of pairwise comparison. It posits a latent
+    quality score for each item, and says the probability one beats another is the
+    logistic function of their difference:
+  </p>
+  <div class="math">P( y_w ≻ y_l | x )  =  σ( r(x, y_w) − r(x, y_l) )
+
+                    =  exp r(x,y_w)
+                       ─────────────────────────
+                       exp r(x,y_w) + exp r(x,y_l)</div>
+  <p class="math-note">
+    Only <em>differences</em> are identified — adding a constant to every score
+    changes nothing. So the absolute value of a reward is meaningless; only
+    comparisons are.
+  </p>
+
+  <h3>Fitting it</h3>
+  <p>Maximum likelihood over your observed preferences gives:</p>
+  <div class="math">L_RM(φ)  =  − E [ w · log σ( r_φ(x, y_w) − r_φ(x, y_l) ) ]</div>
+  <p class="math-note">
+    <code>w</code> is the pair's margin weight, so a unanimous 5–0 reviewer split
+    moves the scorer further than a contested 3–2.
+  </p>
+
+  <h3>Architecture</h3>
+  <p>
+    The policy backbone plus a scalar head, read <strong>at the last real token</strong>
+    of the sequence. Mean-pooling instead would be gameable: every additional bland
+    token drags the average toward whatever the model considers neutral, so padding
+    a good answer with filler moves its score. Reading the final position forces a
+    verdict on the completed response.
+  </p>
+
+  <h3>The failure mode to expect</h3>
+  <div class="warn-box">
+    <span class="label">Length bias</span>
+    <p>
+      Human reviewers mildly prefer longer answers. A reward model fitted on their
+      judgements learns “longer is better” as a shortcut, because it is a far easier
+      function than “more helpful”. A policy optimised against it then discovers it
+      can raise its score by padding — and the reward climbs while quality falls.
+    </p>
+    <p>
+      SLM Foundry reports <code>length_bias_corr</code> — the correlation between
+      reward difference and length difference on held-out pairs — without being
+      asked. Above about 0.4, your reward model is substantially a length detector.
+    </p>
+  </div>
+  <p>Two other numbers, logged every step:</p>
+  <ul>
+    <li><code>pair_acc</code> — how often the scorer agrees with the humans. Stuck
+      near 0.5 means the preferences carry no signal it can find.</li>
+    <li><code>reward_margin</code> — how far apart it puts them. Very high accuracy
+      <em>and</em> a huge margin usually means a shortcut was found.</li>
+  </ul>
+
+  <h3>Where it is used</h3>
+  <p>
+    Required by PPO. Optional elsewhere as an offline evaluator, or as the reward
+    source for GRPO/GSPO. DPO does not need one — that is its central claim.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/reward.py</code>,
+     <code>policy.py :: RewardModel</code></p>
+</section>
+
+<section id="dpo" data-level="preference">
+  <div class="section-head"><h2>DPO — Direct Preference Optimization</h2><span class="chip">Preference</span></div>
+  <div class="rule"></div>
+
+  <h3>The idea</h3>
+  <p>
+    Classical RLHF trains a reward model, then optimises the policy against it with
+    RL. DPO observes that for the KL-constrained objective RLHF actually targets,
+    the optimal policy has a <em>closed form</em> — so the reward model is an
+    unnecessary intermediary that can be eliminated algebraically.
+  </p>
+
+  <h4>The derivation in three steps</h4>
+  <p>The RLHF objective is:</p>
+  <div class="math">max_θ  E[ r(x,y) ]  −  β · KL( π_θ ‖ π_ref )</div>
+  <p>Its solution is known in closed form:</p>
+  <div class="math">π*(y|x)  =  (1 / Z(x)) · π_ref(y|x) · exp( r(x,y) / β )</div>
+  <p>Rearranging for <code>r</code> expresses reward in terms of the policy:</p>
+  <div class="math">r(x,y)  =  β · log ( π*(y|x) / π_ref(y|x) )  +  β log Z(x)</div>
+  <p>
+    Substituting that into the Bradley–Terry likelihood, the intractable partition
+    function <code>Z(x)</code> is identical for both completions of a pair and
+    <strong>cancels</strong>. What is left is a plain classification loss over pairs:
+  </p>
+  <div class="math">L_DPO(θ)  =  − log σ(  β log π_θ(y_w|x)/π_ref(y_w|x)
+                       − β log π_θ(y_l|x)/π_ref(y_l|x)  )</div>
+
+  <div class="key">
+    <span class="label">What this buys</span>
+    No reward model, no sampling, no rollout loop, no value function. Just two
+    forward passes per pair, one of which is under a frozen reference. It is by a
+    wide margin the most stable way to spend a fixed set of preference pairs, which
+    is why it is the default here.
+  </div>
+
+  <h3>The implicit reward</h3>
+  <p>
+    DPO never trains a reward model but it defines one implicitly:
+    <code>r̂(x,y) = β log( π_θ(y|x) / π_ref(y|x) )</code>. The logged metrics
+    <code>reward_chosen</code>, <code>reward_rejected</code> and
+    <code>reward_margin</code> are that quantity — useful for spotting saturation.
+  </p>
+
+  <h3>The characteristic failure</h3>
+  <div class="warn-box">
+    <span class="label">Likelihood displacement</span>
+    <p>
+      The loss depends only on the <em>difference</em> of the two log-ratios. Nothing
+      stops the optimiser from lowering <code>log π_θ(y_w|x)</code> — making your
+      good answer <em>less</em> likely — as long as it lowers
+      <code>log π_θ(y_l|x)</code> faster. Both probabilities fall, the loss improves,
+      and the model gets worse at the thing you wanted.
+    </p>
+    <p>
+      This is why <code>logp_chosen</code> is logged every step. If it declines
+      steadily: raise <code>β</code>, or set <code>sft_weight</code> &gt; 0 to add an
+      explicit NLL term on the chosen response (see RPO below).
+    </p>
+  </div>
+
+  <h3>Choosing β</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>β</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td>0.01–0.05</td><td>Weak leash. Fits preferences hard, drifts, may
+        degenerate.</td></tr>
+      <tr><td><strong>0.1</strong></td><td>The standard default.</td></tr>
+      <tr><td>0.3–0.5</td><td>Conservative. Use with noisy labels or a model you
+        cannot afford to destabilise.</td></tr>
+    </tbody>
+  </table></div>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/dpo.py</code></p>
+</section>
+
+<section id="dpo-variants" data-level="preference">
+  <div class="section-head"><h2>IPO, hinge, cDPO and RPO</h2><span class="chip">Preference</span></div>
+  <div class="rule"></div>
+  <p>
+    Four modifications, all exposed as settings on a DPO run. Each addresses a
+    specific weakness of the sigmoid loss.
+  </p>
+
+  <h3>IPO — Identity Preference Optimisation</h3>
+  <p>
+    DPO's sigmoid loss keeps improving as the log-ratio gap grows, so with clean,
+    deterministic preferences it drives the gap toward infinity — overfitting to a
+    preference that was only ever meant to indicate direction. IPO instead
+    <em>regresses</em> the length-normalised gap onto a finite target:
+  </p>
+  <div class="math">L_IPO  =  ( h_θ  −  1 / (2β) )²
+
+    where  h_θ = (1/|y_w|) log π_θ(y_w)/π_ref(y_w)
+                 − (1/|y_l|) log π_θ(y_l)/π_ref(y_l)</div>
+  <p class="math-note">
+    Use when your dataset is small, clean, or nearly deterministic. The length
+    normalisation also makes it less length-sensitive than standard DPO.
+  </p>
+
+  <h3>Hinge (SLiC-style)</h3>
+  <div class="math">L_hinge  =  max( 0 ,  1 − β · ( log-ratio gap ) )</div>
+  <p class="math-note">
+    Once a pair is separated by the margin it contributes no gradient at all.
+    Cheaper and blunter; useful when most pairs are easy and you want the optimiser
+    to spend its effort on the hard ones.
+  </p>
+
+  <h3>cDPO — conservative DPO (label smoothing)</h3>
+  <p>
+    Assumes a fraction <code>ε</code> of your preference labels are simply wrong:
+  </p>
+  <div class="math">L_cDPO  =  −(1−ε)·log σ(β·gap)  −  ε·log σ(−β·gap)</div>
+  <p class="math-note">
+    Bounds the loss a confidently-mislabelled pair can contribute, so one bad
+    annotation cannot dominate a batch. Set <code>label_smoothing</code> to
+    0.1–0.2 for crowd-sourced data. Set it to your believed annotation error rate.
+  </p>
+
+  <h3>RPO — the auxiliary SFT term</h3>
+  <div class="math">L_RPO  =  L_DPO  +  λ · ( − log π_θ(y_w | x) )</div>
+  <p class="math-note">
+    The direct fix for likelihood displacement: an explicit reward for keeping the
+    chosen response probable. <code>sft_weight</code> is <code>λ</code>. Start at
+    0.1; values above ~1.0 turn the run back into SFT.
+  </p>
+
+  <h3>Which to reach for</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Situation</th><th>Setting</th></tr></thead>
+    <tbody>
+      <tr><td>Default</td><td><code>sigmoid</code>, β = 0.1</td></tr>
+      <tr><td>Small, clean, deterministic preferences</td><td><code>ipo</code></td></tr>
+      <tr><td>Crowd-sourced or contested labels</td><td><code>label_smoothing</code> 0.1–0.2</td></tr>
+      <tr><td><code>logp_chosen</code> falling</td><td><code>sft_weight</code> 0.1–1.0</td></tr>
+      <tr><td>Most pairs trivially easy</td><td><code>hinge</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="rl-setup" data-level="rl">
+  <div class="section-head"><h2>The RLHF objective</h2><span class="chip">RL</span></div>
+  <div class="rule"></div>
+  <p>
+    PPO, GRPO and GSPO all optimise the same thing. They differ only in how they
+    estimate the gradient.
+  </p>
+  <div class="math">max_θ   E_{x ~ D,  y ~ π_θ(·|x)} [ r(x, y) ]   −   β · KL( π_θ ‖ π_ref )
+        └────────── get more reward ──────────┘     └─ without wandering off ─┘</div>
+
+  <h3>Why the KL term is not optional</h3>
+  <p>
+    <code>r</code> is a proxy — a learned model, a judge, or a heuristic — and every
+    proxy has a region where it is wrong. Unconstrained optimisation will find that
+    region, because that is what optimisation does. This is Goodhart's law with a
+    gradient attached. The KL term keeps the policy in the neighbourhood where the
+    proxy was measured and is therefore still meaningful.
+  </p>
+
+  <h4>The KL estimator</h4>
+  <p>
+    Exact KL over a vocabulary is expensive, so it is estimated from samples. The
+    naïve estimator <code>−d</code> where <code>d = log π_ref − log π_θ</code> is
+    unbiased but has high variance and routinely goes <em>negative</em> on a batch —
+    which would make a KL <em>penalty</em> occasionally pay the policy to move away
+    from the reference. SLM Foundry uses Schulman's k3 estimator:
+  </p>
+  <div class="math">KL̂  =  exp(d)  −  d  −  1        ≥ 0 always, lower variance</div>
+  <p class="math-note">
+    Implemented as <code>policy.py :: kl_k3</code> and shared by all three methods.
+  </p>
+
+  <h3>The credit-assignment problem</h3>
+  <p>
+    Reward arrives once, for a whole answer. The gradient needs a signal at every
+    token. How each method bridges that gap is the entire difference between them:
+  </p>
+  <ul>
+    <li><strong>PPO</strong> — learn a value function that predicts future reward at
+      every position, and use it to distribute credit.</li>
+    <li><strong>GRPO</strong> — sample a group of answers to the same prompt and use
+      the group's mean as the baseline. No value function.</li>
+    <li><strong>GSPO</strong> — same baseline, but stop pretending the correction is
+      per-token and apply it once per sequence.</li>
+  </ul>
+</section>
+
+<section id="ppo" data-level="rl">
+  <div class="section-head"><h2>PPO — Proximal Policy Optimization</h2><span class="chip">RL</span></div>
+  <div class="rule"></div>
+
+  <h3>The loop</h3>
+  <div class="math">for each iteration:
+    1. sample completions from π_θ for a batch of prompts
+    2. score them with the reward model
+    3. build per-token rewards  (KL penalty + terminal score)
+    4. estimate advantages with GAE, using the critic V_ψ
+    5. take `ppo_epochs` clipped gradient steps on the same batch</div>
+
+  <h3>Step 3 — turning one score into per-token rewards</h3>
+  <p>
+    The reward model emits one number for the whole completion. The standard
+    construction, used here, spreads the KL penalty across every token and places
+    the score at the final one:
+  </p>
+  <div class="math">r_t  =  − β · KL̂_t                          for t &lt; T
+r_T  =  − β · KL̂_T  +  r_RM(x, y)         at the last token</div>
+
+  <h3>Step 4 — GAE</h3>
+  <p>
+    Generalised Advantage Estimation trades bias against variance with
+    <code>λ</code>. With <code>δ_t</code> the one-step TD error:
+  </p>
+  <div class="math">δ_t  =  r_t  +  γ·V(s_{t+1})  −  V(s_t)
+
+A_t  =  Σ_{l ≥ 0}  (γλ)^l · δ_{t+l}</div>
+  <p class="math-note">
+    <code>λ = 0</code> is pure TD — low variance, high bias. <code>λ = 1</code> is
+    Monte Carlo — unbiased, high variance. 0.95 is the usual compromise.
+    Bootstrapping stops at the completion mask boundary, not the tensor edge; letting
+    padded positions into the recursion drags every real advantage toward zero by
+    however much padding the batch happened to contain.
+  </p>
+
+  <h3>Step 5 — the clipped surrogate</h3>
+  <p>
+    Several gradient steps are taken on one batch of samples, so after the first the
+    data is off-policy. The importance ratio corrects for that, and clipping stops
+    the correction from exploding:
+  </p>
+  <div class="math">ρ_t   =  π_θ(y_t) / π_old(y_t)
+
+L_pg  =  − E_t [ min( ρ_t · A_t ,  clip(ρ_t, 1−ε, 1+ε) · A_t ) ]</div>
+  <p class="math-note">
+    The <code>min</code> makes the objective pessimistic: it accepts the clipped
+    value whenever clipping would have <em>hurt</em>, which removes the incentive to
+    move a token's probability far in one update.
+  </p>
+
+  <h3>The critic</h3>
+  <div class="math">L_V  =  ½ · max( (V − R)² ,  (V_clipped − R)² )
+
+where V_clipped = V_old + clip( V − V_old, −ε_v, +ε_v )</div>
+  <p class="math-note">
+    Clipping the value function too keeps the critic inside the same trust region as
+    the policy. An unconstrained critic can move far enough in one epoch to
+    invalidate the very advantages that epoch was computed from.
+  </p>
+
+  <h3>Adaptive KL control</h3>
+  <p>
+    A fixed <code>β</code> is either too loose early or too tight late, so the
+    coefficient tracks a target KL and adjusts multiplicatively, clamped to ±20% per
+    iteration. You specify “how far may this drift” rather than tuning a penalty by
+    feel. Set <code>target_kl = 0</code> to hold it fixed.
+  </p>
+
+  <h3>The diagnostic that matters most</h3>
+  <div class="key">
+    <span class="label">explained_variance</span>
+    How much of the return variance the critic accounts for. Near <strong>0</strong>
+    the value head has learned nothing and every advantage is mostly noise;
+    <strong>negative</strong> means it is doing worse than predicting the mean, and
+    your PPO run is not doing what it appears to be doing. Look here before
+    interpreting any reward curve.
+  </div>
+
+  <h3>When to use it, honestly</h3>
+  <p>
+    PPO has the most knobs and the most ways to be subtly broken: a badly-fit critic,
+    a stale reward model, a KL coefficient that is not actually binding. It is worth
+    it when you need fine control over the reward–divergence trade-off and have the
+    budget to tune it. For most preference data, DPO gets most of the benefit for a
+    fraction of the operational risk.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/ppo.py</code></p>
+</section>
+
+<section id="grpo" data-level="rl">
+  <div class="section-head"><h2>GRPO — Group Relative Policy Optimization</h2><span class="chip">RL</span></div>
+  <div class="rule"></div>
+
+  <h3>The idea</h3>
+  <p>
+    The critic exists only to provide a baseline — an estimate of “how good is this
+    prompt normally?” — so the advantage measures whether an answer beat expectation.
+    GRPO observes that if you sample <em>G</em> answers to the <em>same</em> prompt,
+    their mean reward is already an unbiased estimate of exactly that. So delete the
+    critic.
+  </p>
+
+  <h3>The advantage</h3>
+  <div class="math">for each prompt, sample  y_1 … y_G  ~  π_θ(·|x)
+
+A_i  =  ( r_i  −  mean(r_1..r_G) )  /  std(r_1..r_G)</div>
+  <p class="math-note">
+    Note the advantage is a <em>single scalar per completion</em> — there is no
+    per-token structure to it, which becomes the crux of GSPO's critique.
+  </p>
+
+  <h3>The objective</h3>
+  <div class="math">ρ_{i,t}  =  π_θ(y_{i,t}) / π_old(y_{i,t})
+
+L  =  − (1 / Σ|y_i|) Σ_i Σ_t  min( ρ_{i,t}·A_i , clip(ρ_{i,t}, 1±ε)·A_i )
+      +  β · KL̂( π_θ ‖ π_ref )</div>
+
+  <h3>What this costs and saves</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th></th><th>PPO</th><th>GRPO</th></tr></thead>
+    <tbody>
+      <tr><td>Extra network</td><td>Critic, same size as policy</td><td>None</td></tr>
+      <tr><td>Memory</td><td>~2× policy</td><td>~1× policy</td></tr>
+      <tr><td>Samples per prompt</td><td>1</td><td>G (typically 4–16)</td></tr>
+      <tr><td>Can go wrong via</td><td>Bad critic fit</td><td>Degenerate groups</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    You trade critic memory for sampling compute. On tasks with a cheap reward
+    function — a verifier, a test suite — that is usually an excellent trade.
+  </p>
+
+  <h3>Two subtleties</h3>
+  <h4>Degenerate groups</h4>
+  <p>
+    If all G samples score identically, the standard deviation is ~0 and dividing by
+    it would manufacture an enormous gradient out of floating-point noise. Such
+    groups contribute exactly zero and are counted in the logs. A few are normal;
+    <em>all</em> of them means your reward source cannot distinguish the model's
+    outputs, and no amount of tuning will help until that is fixed.
+  </p>
+
+  <h4>The std normalisation is a biased choice</h4>
+  <p>
+    Dividing by the group standard deviation stabilises early training, but it also
+    up-weights prompts the policy already answers consistently — a prompt whose
+    samples differ by a hair gets those hairs amplified to unit scale. Removing it
+    (the “Dr. GRPO” correction, <code>scale_by_std = false</code>) drops that bias at
+    some cost in stability.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/group_rl.py</code>,
+     <code>rollout.py :: group_advantages</code></p>
+</section>
+
+<section id="gspo" data-level="rl">
+  <div class="section-head"><h2>GSPO — Group Sequence Policy Optimization</h2><span class="chip">RL</span></div>
+  <div class="rule"></div>
+
+  <h3>The critique</h3>
+  <div class="key">
+    <span class="label">The mismatch GSPO fixes</span>
+    The reward — and therefore the advantage <code>A_i</code> — is a property of the
+    <em>whole sequence</em>. GRPO nonetheless applies a <em>per-token</em> importance
+    correction to it. On a 500-token generation that means 500 independently noisy
+    ratios multiplying a single shared reward signal. One token whose probability
+    moved sharply can dominate the update, and per-token clipping cannot prevent it
+    because it clips each token in isolation.
+  </div>
+
+  <h3>The fix</h3>
+  <p>One ratio per sequence, normalised by length:</p>
+  <div class="math">s_i  =  ( π_θ(y_i|x) / π_old(y_i|x) ) ^ (1/|y_i|)
+
+     =  exp(  (1/|y_i|) · Σ_t [ log π_θ(y_{i,t}) − log π_old(y_{i,t}) ]  )
+
+L    =  − (1/N) Σ_i  min( s_i·A_i ,  clip(s_i, 1−ε_lo, 1+ε_hi)·A_i )</div>
+  <p class="math-note">
+    One ratio, one clipping decision, one unit of credit per answer — matching the
+    granularity of the correction to the granularity of the reward.
+  </p>
+
+  <h3>Why the clip ranges look wrong</h3>
+  <div class="warn-box">
+    <span class="label">ε ≈ 3e-4, not 0.2</span>
+    <p>
+      <code>s_i</code> is a <em>geometric mean</em> over hundreds of per-token ratios.
+      Averaging in log-space concentrates it extremely tightly around 1.0 — far more
+      tightly than any individual token ratio. A clip range of 0.2 would therefore
+      never bind, silently disabling clipping altogether.
+    </p>
+    <p>
+      GSPO's defaults are roughly three orders of magnitude tighter
+      (<code>clip_low ≈ 3e-4</code>, <code>clip_high ≈ 4e-4</code>). That is the
+      <em>equivalent</em> strictness, not a typo. If the run warns that nearly every
+      sequence is being clipped, the learning rate is too high for the range — lower
+      the rate rather than widening the clip.
+    </p>
+  </div>
+
+  <h3>When GSPO wins</h3>
+  <ul>
+    <li><strong>Long generations.</strong> The variance problem scales with length;
+      below ~100 tokens the two are close.</li>
+    <li><strong>Off-policy passes.</strong> Sequence-level clipping tolerates
+      <code>mu &gt; 1</code> far better, which is where the throughput gain lives.
+      With <code>mu = 1</code> every ratio is exactly 1.0 and GSPO reduces to a
+      plain group-baseline policy gradient.</li>
+    <li><strong>GRPO instability.</strong> Runs that collapse or spike without an
+      obvious cause are the canonical symptom.</li>
+  </ul>
+
+  <h3>The trade-off</h3>
+  <p>
+    Sequence-level credit is coarser. Every token in a good answer is reinforced
+    equally, including the mediocre ones. For long-form generation that coarseness
+    costs less than the variance it removes; for short outputs where a single token
+    genuinely carries the reward, GRPO's finer attribution can be better.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/trainers/group_rl.py</code> (mode
+     <code>gspo</code>) — deliberately the same file as GRPO, because they differ in
+     one place.</p>
+</section>
+
+<section id="comparison" data-level="rl">
+  <div class="section-head"><h2>Side by side</h2><span class="chip">RL</span></div>
+  <div class="rule"></div>
+  <div class="table-wrap"><table>
+    <thead><tr>
+      <th></th><th>DPO</th><th>PPO</th><th>GRPO</th><th>GSPO</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>Needs a reward model</td><td>No</td><td><strong>Yes</strong></td><td>No*</td><td>No*</td></tr>
+      <tr><td>Needs a critic</td><td>No</td><td><strong>Yes</strong></td><td>No</td><td>No</td></tr>
+      <tr><td>Samples during training</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Baseline</td><td>—</td><td>Learned V(s)</td><td>Group mean</td><td>Group mean</td></tr>
+      <tr><td>Importance ratio</td><td>—</td><td>Per token</td><td>Per token</td><td><strong>Per sequence</strong></td></tr>
+      <tr><td>Typical clip ε</td><td>—</td><td>0.2</td><td>0.2</td><td><strong>~3e-4</strong></td></tr>
+      <tr><td>Relative cost</td><td>1×</td><td>~10×</td><td>~G×</td><td>~G×</td></tr>
+      <tr><td>Main failure</td><td>Likelihood displacement</td><td>Bad critic fit</td><td>Degenerate groups</td><td>Coarse credit</td></tr>
+    </tbody>
+  </table></div>
+  <p class="math-note">
+    * GRPO and GSPO need a reward <em>signal</em>, which may be a reward model, a
+    judge, or a mechanical verifier.
+  </p>
+</section>
+
+<section id="rlaif" data-level="feedback">
+  <div class="section-head"><h2>RLAIF — reinforcement learning from AI feedback</h2><span class="chip">Feedback</span></div>
+  <div class="rule"></div>
+
+  <h3>What it replaces</h3>
+  <div class="key">
+    <span class="label">The labelling step, not the optimiser</span>
+    RLAIF substitutes a judge model for the humans who would otherwise sit in the
+    review console. The preferences it produces are then consumed by DPO, GRPO or
+    GSPO exactly as human preferences would be. “We used RLAIF” therefore says
+    nothing about how the weights moved — which is why <code>optimizer</code> is a
+    first-class, visible setting here rather than a hidden default.
+  </div>
+
+  <div class="math">prompts → sample K candidates → judge ranks them → preference pairs → optimiser</div>
+
+  <h3>Why it works at all</h3>
+  <p>
+    The asymmetry between <em>generating</em> and <em>evaluating</em>. Producing an
+    excellent answer is hard; recognising which of two answers is better is much
+    easier, and a capable model can do it at a level that correlates usefully with
+    human judgement — for tasks where quality is visible in the text. That
+    qualification is the whole ballgame.
+  </p>
+
+  <h3>The three biases and their mitigations</h3>
+
+  <h4>1. Position bias</h4>
+  <p>
+    Judges systematically favour whichever response they read first — an effect
+    large enough to flip a substantial share of verdicts. Every comparison is
+    scored in both orders and averaged:
+  </p>
+  <div class="math">v₁ = judge(x, A, B)
+v₂ = judge(x, B, A)
+
+if v₁ and v₂ disagree  →  record a tie, margin 0, flag position_flip
+else                   →  winner stands, margins averaged</div>
+  <p class="math-note">
+    Doubles the cost, and buys the <code>position_flip_rate</code> — the cheapest
+    available measure of whether the judge is responding to content or to layout.
+    Above ~25%, treat its labels as weak evidence.
+  </p>
+
+  <h4>2. Manufactured preferences</h4>
+  <p>
+    A judge forced to break a genuine tie invents a preference, and an invented
+    preference is indistinguishable downstream from a real one — it is noise wearing
+    a label. <code>min_margin</code> discards pairs the judge could barely separate.
+    Ties are a first-class verdict, not a failure to decide.
+  </p>
+
+  <h4>3. Unfalsifiability</h4>
+  <p>
+    A judge nothing ever disagrees with is a system whose label quality has never
+    been measured. <code>human_spot_check</code> routes a fraction of judged pairs
+    into the human review queue, and the resulting overlap produces the agreement
+    statistics below.
+  </p>
+
+  <h3>Verbosity and self-preference</h3>
+  <div class="warn-box">
+    <span class="label">Two biases with no cheap mitigation</span>
+    Judges prefer longer, more confident-sounding answers, and prefer text stylistically
+    similar to their own output. Neither is corrected automatically. Watch
+    <code>completion_len</code> during RLAIF runs: steadily growing answers with
+    rising reward is the signature.
+  </div>
+
+  <h3>Constitutional AI, briefly</h3>
+  <p>
+    The related approach (Bai et al., 2022) has the model critique and revise its own
+    output against written principles before any preference is collected. SLM
+    Foundry's rubric — the weighted criteria the judge scores against — is the
+    lightweight version of the same idea: an explicit, inspectable statement of what
+    “better” means, rather than an unstated one.
+  </p>
+
+  <h3>The offline fallback</h3>
+  <p>
+    With no API key configured, the judge degrades to <code>heuristic-v1</code>: a
+    mechanical scorer over four stated proxies — reference overlap, degenerate
+    repetition, length plausibility and prompt echo. It is not an approximation of a
+    model's taste and does not claim to be. It is labelled <code>heuristic-v1</code>
+    in every record it writes so nothing downstream can mistake it for one, and it
+    exists so the pipeline remains runnable end to end.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/judge.py</code>,
+     <code>trainers/rlaif.py</code></p>
+</section>
+
+<section id="reward-fns" data-level="feedback">
+  <div class="section-head"><h2>Reward functions</h2><span class="chip">Feedback</span></div>
+  <div class="rule"></div>
+  <p>
+    Three sources, one signature — <code>f(prompts, completions) → [float]</code> —
+    so PPO, GRPO and GSPO never learn which one they are using.
+  </p>
+
+  <h3>1. Learned — a reward model</h3>
+  <div class="math">r  =  σ( r_φ(x, y) / 4 )        squashed into (0,1)</div>
+  <p>
+    Highest fidelity to what reviewers actually said. Its weakness is structural:
+    as the policy improves it produces answers unlike anything the scorer was fitted
+    on, and the score drifts from reality — the reason classical RLHF pipelines
+    periodically refresh the reward model.
+  </p>
+
+  <h3>2. Mechanical — a verifier</h3>
+  <p>
+    Where the prompts carry a reference answer. Token-F1 with a bonus for an exact
+    normalised match:
+  </p>
+  <div class="math">F1     =  2PR / (P + R)     over token overlap with the reference
+exact  =  1 if normalised strings match, else 0
+
+r      =  min( 1,  F1 · (1 − b)  +  exact · b )        b = 0.3</div>
+  <p class="math-note">
+    The exact-match bonus is not cosmetic. Under pure F1, an answer padded with every
+    plausible response earns most of the credit, and a policy optimised against that
+    learns to hedge exhaustively.
+  </p>
+  <p>
+    Free per rollout and impossible to game — but only available where answers are
+    checkable. Chosen automatically when at least half the prompts carry references.
+  </p>
+
+  <h3>3. Judged — a model</h3>
+  <p>
+    The judge's weighted rubric score, normalised to 0–1 and cached on
+    <code>(prompt, completion)</code>. The cache matters: GRPO with G = 8 resamples
+    the same prompt constantly and duplicate generations are common early in
+    training, when the policy is still near-greedy. A judge outage returns
+    <strong>0.5</strong>, the neutral value — it contributes nothing to a
+    group-relative advantage rather than pulling it somewhere false.
+  </p>
+
+  <h3>Why everything is normalised to ~[0,1]</h3>
+  <div class="key">
+    <span class="label">Not tidiness — correctness</span>
+    KL coefficients, clip ranges and advantage scales are all tuned against an assumed
+    reward magnitude. Swapping a source emitting logits in [−8, 8] for one emitting
+    [0, 1] silently changes the effective strength of every other RL hyperparameter
+    in the catalogue. Normalising at the boundary makes the settings portable across
+    reward sources.
+  </div>
+
+  <h3>Blending</h3>
+  <p>
+    Sources can be combined by weight — for instance 0.7 × reward model + 0.3 ×
+    verifier, where the verifier anchors correctness and the reward model covers
+    everything correctness does not.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/rewards.py</code></p>
+</section>
+
+<section id="evaluation" data-level="measure">
+  <div class="section-head"><h2>Evaluation metrics</h2><span class="chip">Measurement</span></div>
+  <div class="rule"></div>
+
+  <h3>Multiple choice — by likelihood, not generation</h3>
+  <p>
+    Given <code>choices</code> and an <code>answer</code>, each option is scored under
+    the model and the highest wins:
+  </p>
+  <div class="math">pick  =  argmax_c   (1/|c|) · Σ_t log π_θ( c_t | x, c_&lt;t )</div>
+  <p class="math-note">
+    <strong>Length-normalised.</strong> Raw summed log-probability always prefers the
+    shortest option, turning multiple choice into a length contest. And ranking rather
+    than generating means a model that knows the answer but phrases it loosely is not
+    marked wrong — that would measure formatting compliance, not knowledge.
+  </p>
+
+  <h3>Open generation</h3>
+  <ul>
+    <li><strong>Exact match</strong> — after normalising case and whitespace. Brittle,
+      but unambiguous where it applies.</li>
+    <li><strong>Token F1</strong> — harmonic mean of precision and recall over token
+      overlap. Forgiving of phrasing, blind to word order and negation.</li>
+    <li><strong>Judge score</strong> — a model grading against a rubric. Captures
+      what the other two cannot; carries every judge bias described above.</li>
+  </ul>
+
+  <h3>Two metrics reported unprompted</h3>
+  <div class="note">
+    <span class="label">degenerate_rate</span>
+    The share of outputs that collapsed — one token repeated, or a short phrase
+    looping. Detected by token-type ratio below 0.25 or any n-gram exceeding 40% of
+    all n-grams. This and runaway length are the two most common fine-tuning
+    failures, and both leave the task metric looking merely unremarkable rather than
+    obviously broken.
+  </div>
+
+  <h3>Head-to-head comparison</h3>
+  <p>
+    Absolute scores drift with prompt formatting and sampling settings. “Which of
+    these two answers is better” is both more stable and closer to the question a
+    stakeholder is actually asking. Reported with a
+    <strong>Wilson score interval</strong> rather than a bare proportion:
+  </p>
+  <div class="math">              p̂ + z²/2n   ±   z·√( p̂(1−p̂)/n + z²/4n² )
+  CI₉₅  =   ──────────────────────────────────────────────
+                          1 + z²/n</div>
+  <p class="math-note">
+    Wilson rather than the normal approximation because it stays inside [0,1] near
+    the extremes, where the normal approximation produces impossible bounds. Without
+    an interval, a 6–4 result on ten prompts reads as a win; with one, it reads as
+    the coin flip it is.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/evaluate.py</code></p>
+</section>
+
+<section id="review-stats" data-level="measure">
+  <div class="section-head"><h2>The statistics of review</h2><span class="chip">Measurement</span></div>
+  <div class="rule"></div>
+  <p>
+    Human review is a sampling procedure, and treating it as one is what makes the
+    resulting numbers mean anything.
+  </p>
+
+  <h3>Propensity, and why it is recorded</h3>
+  <p>
+    The queue deliberately favours informative items — high model uncertainty, items
+    still short of their annotation target. That is good for label efficiency and
+    fatal for naïve estimation: any rate computed from the reviewed set is biased by
+    the sampling, and by an unknown amount unless the sampling probability is known.
+  </p>
+  <p>So assignment is <em>sampled</em>, not sorted:</p>
+  <div class="math">score_i  =  ( need_i · 0.5  +  uncertainty_i  +  priority_i · 0.25 ) / τ
+
+p_i      =  softmax(score)_i          ← stored on the assignment row</div>
+  <p class="math-note">
+    A deterministic “hardest first” queue is a policy with an unknown propensity.
+    Softmax sampling makes <code>p_i</code> well defined and non-zero for everything
+    in the pool.
+  </p>
+
+  <h4>Inverse-propensity weighting</h4>
+  <div class="math">w_i  =  clip(  p_uniform / p_i  ,  0.2 ,  5.0 )      p_uniform = 1/40</div>
+  <p class="math-note">
+    Expressed relative to what a uniform queue would have given, so an unbiased
+    sampler yields <code>w = 1</code>. The clip is not cosmetic: an item sampled with
+    p = 0.001 would otherwise arrive carrying forty times its neighbours' weight and
+    decide the update by itself.
+  </p>
+
+  <h3>Consensus and the training margin</h3>
+  <div class="math">agreement  =  votes for the plurality choice / total votes
+
+margin     =  max( 0,  2·agreement − 1 )  ·  mean(confidence)</div>
+  <p class="math-note">
+    Unanimous and confident → 1.0. A 3–2 split → 0.2 before the confidence discount.
+    That margin becomes the DPO pair weight, so a contested item genuinely moves the
+    policy less far than a decisive one. Below 0.6 agreement the item is routed to a
+    lead for adjudication rather than being settled by majority-of-two.
+  </p>
+
+  <h3>Agreement: raw, and corrected</h3>
+  <p>
+    On a two-way choice, two annotators guessing randomly agree 50% of the time. Raw
+    agreement of 60% therefore looks respectable and means very little.
+    <strong>Cohen's kappa</strong> subtracts the chance baseline:
+  </p>
+  <div class="math">κ  =  ( p_o  −  p_e )  /  ( 1  −  p_e )
+
+  p_o = observed agreement
+  p_e = agreement expected from the two label distributions alone</div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>κ</th><th>Reading</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>&lt; 0.2</td><td>Barely above chance</td><td>Do not train on these labels.</td></tr>
+      <tr><td>0.2 – 0.4</td><td>Weak</td><td>Usable with a large human spot-check.</td></tr>
+      <tr><td>0.4 – 0.6</td><td>Moderate</td><td>Reasonable for scaling labelling.</td></tr>
+      <tr><td>&gt; 0.6</td><td>Strong</td><td>The judge tracks your reviewers.</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    Low kappa between <em>humans</em> is usually not carelessness — it is a sign the
+    question is underspecified. Sharpen the rubric before blaming the annotators.
+  </p>
+  <p><em>Implementation:</em> <code>src/foundry/review.py</code></p>
+</section>
+
+<section id="reading" data-level="measure">
+  <div class="section-head"><h2>Further reading</h2></div>
+  <div class="rule"></div>
+  <p>The primary sources for each technique, in the order this manual covers them.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Technique</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>LoRA</td><td>Hu et al., <em>LoRA: Low-Rank Adaptation of Large Language Models</em>, 2021</td></tr>
+      <tr><td>Bradley–Terry</td><td>Bradley &amp; Terry, <em>Rank Analysis of Incomplete Block Designs</em>, 1952</td></tr>
+      <tr><td>RLHF</td><td>Christiano et al., <em>Deep RL from Human Preferences</em>, 2017; Ouyang et al., <em>InstructGPT</em>, 2022</td></tr>
+      <tr><td>PPO</td><td>Schulman et al., <em>Proximal Policy Optimization Algorithms</em>, 2017</td></tr>
+      <tr><td>GAE</td><td>Schulman et al., <em>High-Dimensional Continuous Control Using GAE</em>, 2015</td></tr>
+      <tr><td>DPO</td><td>Rafailov et al., <em>Direct Preference Optimization</em>, 2023</td></tr>
+      <tr><td>IPO</td><td>Azar et al., <em>A General Theoretical Paradigm to Understand Learning from Human Preferences</em>, 2023</td></tr>
+      <tr><td>GRPO</td><td>Shao et al., <em>DeepSeekMath</em>, 2024</td></tr>
+      <tr><td>Dr. GRPO</td><td>Liu et al., <em>Understanding R1-Zero-Like Training</em>, 2025</td></tr>
+      <tr><td>GSPO</td><td>Zheng et al., <em>Group Sequence Policy Optimization</em>, 2025</td></tr>
+      <tr><td>RLAIF</td><td>Bai et al., <em>Constitutional AI</em>, 2022; Lee et al., <em>RLAIF</em>, 2023</td></tr>
+      <tr><td>Judge bias</td><td>Zheng et al., <em>Judging LLM-as-a-Judge with MT-Bench</em>, 2023</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">
+    <span class="label">On the implementations here</span>
+    Each method is implemented directly against torch rather than delegated to a
+    library, so the code in <code>src/foundry/trainers/</code> is readable alongside
+    these papers. Where SLM Foundry departs from a paper — the k3 KL estimator, the
+    degenerate-group guard, normalising all reward sources to a common scale — the
+    reason is documented in the module docstring.
+  </div>
+</section>
+
+<div class="no-results" id="no-results" hidden>
+  <p><strong>Nothing matches that search.</strong></p>
+  <p>Try a method (<code>GSPO</code>, <code>IPO</code>), a concept
+     (<code>importance ratio</code>, <code>advantage</code>, <code>kappa</code>),
+     or a symbol (<code>beta</code>, <code>KL</code>).</p>
+</div>
+
+<footer>
+  SLM Foundry methods manual · see the <a href="user-manual.html">User manual</a> for
+  operating the console · press <code>/</code> to search
+</footer>
+</main>
+</div>
+
+<script src="manual.js"></script>
+</body>
+</html>
