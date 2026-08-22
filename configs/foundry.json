@@ -1,0 +1,210 @@
+{
+  "_comment": "Single source of truth for the method catalogue. The run wizard renders its forms from `params` here and the trainers validate against the same block, so a hyperparameter cannot exist in the UI without existing in the trainer.",
+
+  "queue": {
+    "lease_seconds": 120,
+    "heartbeat_seconds": 20,
+    "max_attempts": 3,
+    "default_team_concurrency": 2,
+    "reap_interval_seconds": 30
+  },
+
+  "limits": {
+    "max_upload_bytes": 536870912,
+    "max_rows": 500000,
+    "max_candidates_per_prompt": 8
+  },
+
+  "base_models": [
+    {"id": "sshleifer/tiny-gpt2", "label": "tiny-gpt2 (4M) — smoke tests", "params": "4M", "ctx": 1024, "tier": "test"},
+    {"id": "HuggingFaceTB/SmolLM2-135M-Instruct", "label": "SmolLM2 135M Instruct", "params": "135M", "ctx": 8192, "tier": "small"},
+    {"id": "HuggingFaceTB/SmolLM2-360M-Instruct", "label": "SmolLM2 360M Instruct", "params": "360M", "ctx": 8192, "tier": "small"},
+    {"id": "Qwen/Qwen2.5-0.5B-Instruct", "label": "Qwen2.5 0.5B Instruct", "params": "0.5B", "ctx": 32768, "tier": "small"},
+    {"id": "Qwen/Qwen2.5-1.5B-Instruct", "label": "Qwen2.5 1.5B Instruct", "params": "1.5B", "ctx": 32768, "tier": "medium"},
+    {"id": "meta-llama/Llama-3.2-1B-Instruct", "label": "Llama 3.2 1B Instruct", "params": "1B", "ctx": 131072, "tier": "medium"},
+    {"id": "meta-llama/Llama-3.2-3B-Instruct", "label": "Llama 3.2 3B Instruct", "params": "3B", "ctx": 131072, "tier": "large"}
+  ],
+
+  "judge": {
+    "model": "claude-sonnet-5",
+    "max_concurrency": 4,
+    "temperature": 0.0,
+    "rubric": [
+      {"key": "helpfulness", "label": "Helpfulness", "weight": 0.4,
+       "guidance": "Does the response actually do what was asked, completely and at the right level of detail?"},
+      {"key": "accuracy", "label": "Accuracy", "weight": 0.4,
+       "guidance": "Is every factual claim correct and every instruction faithfully followed? Fabrication is disqualifying."},
+      {"key": "style", "label": "Style & tone", "weight": 0.2,
+       "guidance": "Is it clear, well-organised, and free of padding, hedging, and restatement of the question?"}
+    ]
+  },
+
+  "methods": {
+    "sft": {
+      "label": "Supervised fine-tuning",
+      "family": "sft",
+      "blurb": "Teach the base model your task from demonstration data. Start here — every preference method assumes a competent policy to improve.",
+      "requires": {"train": "sft", "eval": "benchmark"},
+      "params": [
+        {"name": "epochs", "label": "Epochs", "type": "float", "default": 3, "min": 0.1, "max": 20, "step": 0.1,
+         "help": "Passes over the training set. Small datasets need more; past ~5 epochs a LoRA starts memorising."},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.0002, "min": 1e-6, "max": 0.01,
+         "help": "2e-4 is the standard LoRA starting point — roughly 10x what you would use for a full fine-tune."},
+        {"name": "batch_size", "label": "Batch size", "type": "int", "default": 8, "min": 1, "max": 128},
+        {"name": "grad_accum", "label": "Gradient accumulation", "type": "int", "default": 1, "min": 1, "max": 64,
+         "help": "Multiplies effective batch size without extra memory.", "advanced": true},
+        {"name": "max_seq_len", "label": "Max sequence length", "type": "int", "default": 1024, "min": 64, "max": 8192},
+        {"name": "warmup_ratio", "label": "Warmup ratio", "type": "float", "default": 0.03, "min": 0, "max": 0.5, "advanced": true},
+        {"name": "weight_decay", "label": "Weight decay", "type": "float", "default": 0.0, "min": 0, "max": 0.3, "advanced": true},
+        {"name": "completion_only_loss", "label": "Train on completion only", "type": "bool", "default": true,
+         "help": "Mask the prompt out of the loss. Off means the model also learns to produce your prompts, which is rarely what you want."},
+        {"name": "packing", "label": "Pack short examples", "type": "bool", "default": false, "advanced": true,
+         "help": "Concatenate examples up to max length. Faster on short data; blurs example boundaries."}
+      ]
+    },
+
+    "reward": {
+      "label": "Reward model",
+      "family": "reward",
+      "blurb": "Bradley-Terry scorer trained on preference pairs. Required by PPO; optional elsewhere as an offline evaluator.",
+      "requires": {"train": "preference"},
+      "params": [
+        {"name": "epochs", "label": "Epochs", "type": "float", "default": 1, "min": 0.1, "max": 10, "step": 0.1},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.00005, "min": 1e-7, "max": 0.01},
+        {"name": "batch_size", "label": "Batch size (pairs)", "type": "int", "default": 4, "min": 1, "max": 64},
+        {"name": "max_seq_len", "label": "Max sequence length", "type": "int", "default": 1024, "min": 64, "max": 8192},
+        {"name": "margin_weighting", "label": "Weight by preference margin", "type": "bool", "default": true,
+         "help": "A 5-0 reviewer split should move the scorer further than a 3-2 split.", "advanced": true}
+      ]
+    },
+
+    "dpo": {
+      "label": "DPO — Direct Preference Optimization",
+      "family": "preference",
+      "blurb": "Closed-form preference learning. No reward model, no sampling, no rollout loop: the most stable way to spend a set of preference pairs.",
+      "requires": {"train": "preference", "policy": true},
+      "params": [
+        {"name": "beta", "label": "Beta (KL strength)", "type": "float", "default": 0.1, "min": 0.001, "max": 1.0, "step": 0.001,
+         "help": "How far the policy may drift from the reference. Lower = freer and less stable. 0.1 is the usual default."},
+        {"name": "epochs", "label": "Epochs", "type": "float", "default": 1, "min": 0.1, "max": 10, "step": 0.1},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.000005, "min": 1e-8, "max": 0.001,
+         "help": "An order of magnitude below SFT. DPO diverges loudly if this is too high."},
+        {"name": "batch_size", "label": "Batch size (pairs)", "type": "int", "default": 4, "min": 1, "max": 64},
+        {"name": "max_seq_len", "label": "Max sequence length", "type": "int", "default": 1024, "min": 64, "max": 8192},
+        {"name": "loss_variant", "label": "Loss variant", "type": "enum", "default": "sigmoid",
+         "options": [
+           {"value": "sigmoid", "label": "Sigmoid (standard DPO)"},
+           {"value": "ipo", "label": "IPO — squared loss, resists overfitting"},
+           {"value": "hinge", "label": "Hinge (SLiC-style)"}
+         ], "advanced": true},
+        {"name": "label_smoothing", "label": "Label smoothing (cDPO)", "type": "float", "default": 0.0, "min": 0, "max": 0.5,
+         "help": "Assume this fraction of preference labels are wrong. Useful with noisy crowd annotation.", "advanced": true},
+        {"name": "sft_weight", "label": "Auxiliary SFT weight", "type": "float", "default": 0.0, "min": 0, "max": 1.0,
+         "help": "Adds NLL on the chosen response (RPO). Counteracts DPO's tendency to lower both likelihoods.", "advanced": true}
+      ]
+    },
+
+    "ppo": {
+      "label": "PPO — Proximal Policy Optimization",
+      "family": "rl",
+      "blurb": "The classic on-policy RLHF loop: sample, score with a reward model, update inside a trust region. Most powerful, most moving parts.",
+      "requires": {"train": "prompts", "policy": true, "reward_model": true},
+      "params": [
+        {"name": "iterations", "label": "Iterations", "type": "int", "default": 20, "min": 1, "max": 2000,
+         "help": "Each iteration samples a batch of prompts, scores them, and takes `ppo_epochs` update passes."},
+        {"name": "rollout_batch", "label": "Prompts per iteration", "type": "int", "default": 8, "min": 1, "max": 256},
+        {"name": "ppo_epochs", "label": "PPO epochs per batch", "type": "int", "default": 4, "min": 1, "max": 16, "advanced": true},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.000001, "min": 1e-9, "max": 0.001},
+        {"name": "clip_range", "label": "Policy clip range", "type": "float", "default": 0.2, "min": 0.01, "max": 1.0},
+        {"name": "value_clip_range", "label": "Value clip range", "type": "float", "default": 0.2, "min": 0.01, "max": 1.0, "advanced": true},
+        {"name": "vf_coef", "label": "Value loss coefficient", "type": "float", "default": 0.1, "min": 0, "max": 10, "advanced": true},
+        {"name": "entropy_coef", "label": "Entropy bonus", "type": "float", "default": 0.0, "min": 0, "max": 0.1, "advanced": true},
+        {"name": "gamma", "label": "Discount (gamma)", "type": "float", "default": 1.0, "min": 0.8, "max": 1.0, "advanced": true},
+        {"name": "lam", "label": "GAE lambda", "type": "float", "default": 0.95, "min": 0, "max": 1.0, "advanced": true},
+        {"name": "kl_coef", "label": "KL penalty coefficient", "type": "float", "default": 0.05, "min": 0, "max": 5.0,
+         "help": "Per-token penalty against the reference policy. The main guard against reward hacking."},
+        {"name": "target_kl", "label": "Target KL (adaptive)", "type": "float", "default": 6.0, "min": 0, "max": 100,
+         "help": "0 disables adaptation and holds the KL coefficient fixed.", "advanced": true},
+        {"name": "max_new_tokens", "label": "Max new tokens", "type": "int", "default": 128, "min": 8, "max": 2048},
+        {"name": "temperature", "label": "Sampling temperature", "type": "float", "default": 1.0, "min": 0.1, "max": 2.0},
+        {"name": "whiten_advantages", "label": "Whiten advantages", "type": "bool", "default": true, "advanced": true}
+      ]
+    },
+
+    "grpo": {
+      "label": "GRPO — Group Relative Policy Optimization",
+      "family": "rl",
+      "blurb": "PPO with the critic deleted. Samples a group per prompt and uses the group's own mean as the baseline — half the memory, no value-function bugs.",
+      "requires": {"train": "prompts", "policy": true},
+      "params": [
+        {"name": "iterations", "label": "Iterations", "type": "int", "default": 20, "min": 1, "max": 2000},
+        {"name": "rollout_batch", "label": "Prompts per iteration", "type": "int", "default": 4, "min": 1, "max": 128},
+        {"name": "group_size", "label": "Group size (G)", "type": "int", "default": 8, "min": 2, "max": 64,
+         "help": "Completions sampled per prompt. The baseline is their mean reward, so groups below ~4 give a noisy advantage."},
+        {"name": "mu", "label": "Update passes per batch", "type": "int", "default": 1, "min": 1, "max": 16, "advanced": true,
+         "help": "mu=1 is fully on-policy and makes the importance ratio exactly 1."},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.000001, "min": 1e-9, "max": 0.001},
+        {"name": "clip_range", "label": "Clip range (token-level)", "type": "float", "default": 0.2, "min": 0.01, "max": 1.0},
+        {"name": "kl_coef", "label": "KL penalty coefficient", "type": "float", "default": 0.04, "min": 0, "max": 5.0},
+        {"name": "scale_by_std", "label": "Divide advantage by group std", "type": "bool", "default": true,
+         "help": "Standard GRPO. Turning it off (Dr. GRPO) removes a bias that over-weights low-variance prompts.", "advanced": true},
+        {"name": "max_new_tokens", "label": "Max new tokens", "type": "int", "default": 128, "min": 8, "max": 2048},
+        {"name": "temperature", "label": "Sampling temperature", "type": "float", "default": 1.0, "min": 0.1, "max": 2.0}
+      ]
+    },
+
+    "gspo": {
+      "label": "GSPO — Group Sequence Policy Optimization",
+      "family": "rl",
+      "blurb": "GRPO's fix for long generations: importance ratios and clipping move to the sequence level, so one freak token can no longer blow up an entire update.",
+      "requires": {"train": "prompts", "policy": true},
+      "params": [
+        {"name": "iterations", "label": "Iterations", "type": "int", "default": 20, "min": 1, "max": 2000},
+        {"name": "rollout_batch", "label": "Prompts per iteration", "type": "int", "default": 4, "min": 1, "max": 128},
+        {"name": "group_size", "label": "Group size (G)", "type": "int", "default": 8, "min": 2, "max": 64},
+        {"name": "mu", "label": "Update passes per batch", "type": "int", "default": 2, "min": 1, "max": 16, "advanced": true,
+         "help": "GSPO's reason to exist is tolerating off-policy passes, so mu>1 is where it pays off."},
+        {"name": "learning_rate", "label": "Learning rate", "type": "float", "default": 0.000001, "min": 1e-9, "max": 0.001},
+        {"name": "clip_low", "label": "Clip range (low)", "type": "float", "default": 0.0003, "min": 0.00001, "max": 0.5,
+         "help": "Sequence ratios are length-normalised and hug 1.0 far more tightly than token ratios, so GSPO clips ~3 orders of magnitude tighter than PPO."},
+        {"name": "clip_high", "label": "Clip range (high)", "type": "float", "default": 0.0004, "min": 0.00001, "max": 0.5},
+        {"name": "kl_coef", "label": "KL penalty coefficient", "type": "float", "default": 0.0, "min": 0, "max": 5.0,
+         "help": "GSPO is usually run without an explicit KL term; sequence clipping already constrains the step."},
+        {"name": "scale_by_std", "label": "Divide advantage by group std", "type": "bool", "default": true, "advanced": true},
+        {"name": "max_new_tokens", "label": "Max new tokens", "type": "int", "default": 128, "min": 8, "max": 2048},
+        {"name": "temperature", "label": "Sampling temperature", "type": "float", "default": 1.0, "min": 0.1, "max": 2.0}
+      ]
+    },
+
+    "rlaif": {
+      "label": "RLAIF — AI feedback",
+      "family": "rlaif",
+      "blurb": "Replaces the human labelling step, not the optimiser. A judge model ranks sampled candidates into preference pairs, then the pipeline you pick consumes them.",
+      "requires": {"train": "prompts", "policy": true},
+      "params": [
+        {"name": "optimizer", "label": "Optimiser", "type": "enum", "default": "dpo",
+         "options": [
+           {"value": "dpo", "label": "DPO on judged pairs"},
+           {"value": "grpo", "label": "GRPO on judge scores"},
+           {"value": "gspo", "label": "GSPO on judge scores"}
+         ],
+         "help": "AI feedback is the label source. This is what actually updates the weights."},
+        {"name": "candidates_per_prompt", "label": "Candidates per prompt", "type": "int", "default": 4, "min": 2, "max": 8},
+        {"name": "judge_model", "label": "Judge model", "type": "enum", "default": "claude-sonnet-5",
+         "options": [
+           {"value": "claude-opus-5", "label": "Claude Opus 5 — most discerning"},
+           {"value": "claude-sonnet-5", "label": "Claude Sonnet 5 — balanced"},
+           {"value": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 — cheapest"}
+         ]},
+        {"name": "position_debias", "label": "Score both orderings", "type": "bool", "default": true,
+         "help": "Judges favour whichever answer they read first. Scoring A/B and B/A and averaging removes most of it — at double the cost."},
+        {"name": "min_margin", "label": "Minimum score margin", "type": "float", "default": 0.5, "min": 0, "max": 5,
+         "help": "Discard pairs the judge could barely separate. Ties teach nothing and add gradient noise."},
+        {"name": "human_spot_check", "label": "Route a sample to human review", "type": "float", "default": 0.1, "min": 0, "max": 1,
+         "help": "Fraction of judged pairs also queued for a human. This is what turns an unfalsifiable judge into a measured one."},
+        {"name": "temperature", "label": "Sampling temperature", "type": "float", "default": 1.0, "min": 0.1, "max": 2.0},
+        {"name": "max_new_tokens", "label": "Max new tokens", "type": "int", "default": 128, "min": 8, "max": 2048}
+      ]
+    }
+  }
+}

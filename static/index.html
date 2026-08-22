@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Foundry</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ------------------------------------------------------------------ login -->
+<div id="login-view" class="login-wrap">
+  <form id="login-form" class="login-card">
+    <div class="mark" aria-hidden="true"></div>
+    <h1>SLM Foundry</h1>
+    <p class="sub">Bring your data. Get a fine-tuned model.</p>
+    <label class="field">
+      <span class="field-label">Email</span>
+      <input type="email" id="login-email" required autocomplete="username" autofocus>
+    </label>
+    <label class="field">
+      <span class="field-label">Password</span>
+      <input type="password" id="login-password" required autocomplete="current-password">
+    </label>
+    <button type="submit" class="btn primary block lg">Sign in</button>
+    <div id="login-error" class="inline-error"></div>
+    <p class="hint" id="login-hint"></p>
+  </form>
+</div>
+
+<!-- -------------------------------------------------------------------- app -->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark sm" aria-hidden="true"></span>
+      SLM&nbsp;Foundry <span class="sub" id="team-name"></span>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="overview" role="tab">Overview</button>
+      <button class="tab" data-view="data" role="tab">Data</button>
+      <button class="tab" data-view="train" role="tab">
+        Train <span class="tab-count" id="count-runs" hidden></span>
+      </button>
+      <button class="tab" data-view="review" data-min-role="reviewer" role="tab">
+        Review <span class="tab-count" id="count-review" hidden></span>
+      </button>
+      <button class="tab" data-view="models" role="tab">Models</button>
+      <button class="tab" data-view="queue" role="tab">
+        Queue <span class="tab-count" id="count-queue" hidden></span>
+      </button>
+    </nav>
+
+    <div class="topbar-right">
+      <button id="help-btn" class="btn icon quiet" title="Keyboard shortcuts">?</button>
+      <div class="user-chip">
+        <span class="avatar" id="user-avatar"></span>
+        <span class="user-meta">
+          <span class="who" id="user-name"></span>
+          <span class="user-role" id="user-role"></span>
+        </span>
+      </div>
+      <button id="logout" class="btn quiet sm">Sign out</button>
+    </div>
+  </header>
+
+  <!-- ============================================================ overview -->
+  <main id="view-overview" class="view" role="tabpanel">
+    <div class="view-head">
+      <div class="grow">
+        <h1>Overview</h1>
+        <p>Your team's pipeline at a glance. Everything here is scoped to
+           <strong id="ov-team"></strong>.</p>
+      </div>
+      <button class="btn primary" data-goto="train">New training run</button>
+    </div>
+    <div id="ov-banner"></div>
+    <div class="grid c4" id="ov-stats"></div>
+    <div class="sep"></div>
+    <div class="grid side">
+      <div class="card">
+        <div class="card-head"><h3>Recent runs</h3>
+          <button class="btn sm quiet" data-goto="train">View all</button></div>
+        <div id="ov-runs"></div>
+      </div>
+      <div class="grid" style="gap:14px">
+        <div class="card">
+          <div class="card-head"><h3>In production</h3></div>
+          <div id="ov-production"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Cluster</h3></div>
+          <div class="card-body tight" id="ov-cluster"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ================================================================ data -->
+  <main id="view-data" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <div class="grow">
+        <h1>Data</h1>
+        <p>Upload JSONL (or a JSON array). Every row is validated and normalised on
+           the way in, so a schema surprise surfaces here rather than forty minutes
+           into a training run.</p>
+      </div>
+    </div>
+    <div class="grid side">
+      <div class="card">
+        <div class="card-head"><h3>Datasets</h3>
+          <select id="data-filter" style="width:auto">
+            <option value="">All kinds</option>
+          </select>
+        </div>
+        <div id="data-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Upload</h3></div>
+        <div class="card-body">
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input type="text" id="up-name" placeholder="support-tickets-v1">
+          </label>
+          <label class="field">
+            <span class="field-label">Kind</span>
+            <select id="up-kind"></select>
+            <span class="field-help" id="up-kind-help"></span>
+          </label>
+          <label class="field">
+            <span class="field-label">Description <span class="muted">optional</span></span>
+            <input type="text" id="up-desc" placeholder="What is this and where did it come from?">
+          </label>
+          <div class="dropzone" id="dropzone">
+            <div class="big" id="drop-title">Drop a file, or click to choose</div>
+            <div class="small">.jsonl or .json · up to 512&nbsp;MB</div>
+            <input type="file" id="up-file" accept=".jsonl,.json,.txt" hidden>
+          </div>
+          <div class="inline-error" id="up-error"></div>
+          <button class="btn primary block" id="up-submit" disabled>Upload &amp; validate</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- =============================================================== train -->
+  <main id="view-train" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <div class="grow">
+        <h1>Train</h1>
+        <p>Pick a method, point it at data, launch. Work runs on shared workers with
+           per-team fair-share scheduling — you do not queue behind your own backlog.</p>
+      </div>
+      <button class="btn quiet" id="train-toggle-form">New run</button>
+    </div>
+
+    <div class="rail" id="pipeline-rail"></div>
+
+    <div id="train-form-wrap" class="card" hidden>
+      <div class="card-head"><h3>New run</h3>
+        <button class="btn sm quiet" id="train-cancel-form">Close</button></div>
+      <div class="card-body">
+        <div class="field-label">Method</div>
+        <div class="methods" id="method-cards"></div>
+        <div id="method-detail" hidden>
+          <div class="sep"></div>
+          <div class="grid c2">
+            <label class="field">
+              <span class="field-label">Run name</span>
+              <input type="text" id="run-name" placeholder="support-assistant-sft">
+            </label>
+            <label class="field">
+              <span class="field-label">Base model</span>
+              <select id="run-base"></select>
+            </label>
+          </div>
+          <div class="grid c3" id="run-sources"></div>
+          <div class="sep"></div>
+          <div class="row auto" style="justify-content:space-between;align-items:center">
+            <div class="field-label" style="margin:0">Hyperparameters</div>
+            <label class="switch" style="margin:0">
+              <input type="checkbox" id="show-advanced"> Show advanced
+            </label>
+          </div>
+          <div class="grid c3" id="run-params" style="margin-top:10px"></div>
+          <div class="sep"></div>
+          <details>
+            <summary class="field-label" style="cursor:pointer">LoRA &amp; execution</summary>
+            <div class="grid c4" style="margin-top:10px">
+              <label class="field"><span class="field-label">Rank (r)</span>
+                <input type="number" id="lora-r" value="16" min="1" max="256"></label>
+              <label class="field"><span class="field-label">Alpha</span>
+                <input type="number" id="lora-alpha" value="32" min="1" max="512"></label>
+              <label class="field"><span class="field-label">Dropout</span>
+                <input type="number" id="lora-dropout" value="0.05" step="0.01" min="0" max="0.9"></label>
+              <label class="field"><span class="field-label">Backend</span>
+                <select id="run-backend">
+                  <option value="auto">Auto</option>
+                  <option value="torch">Real base model</option>
+                  <option value="tiny">Tiny (smoke test)</option>
+                </select></label>
+            </div>
+          </details>
+          <div class="inline-error" id="run-error"></div>
+          <div class="row auto" style="justify-content:flex-end">
+            <button class="btn primary lg" id="run-submit">Queue run</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-head"><h3>Runs</h3>
+        <select id="run-filter" style="width:auto">
+          <option value="">All</option><option value="queued">Queued</option>
+          <option value="running">Running</option><option value="succeeded">Succeeded</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      <div id="run-list"></div>
+    </div>
+  </main>
+
+  <!-- ============================================================== review -->
+  <main id="view-review" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <div class="grow">
+        <h1>Review</h1>
+        <p>Your judgements become preference pairs, and preference pairs are what
+           DPO, PPO, GRPO, GSPO and RLAIF all consume. Judge the text, not the model.</p>
+      </div>
+      <div class="row auto">
+        <button class="btn quiet" id="review-mode-batches">Batches</button>
+        <button class="btn quiet" id="review-mode-stats">Agreement</button>
+        <button class="btn quiet" id="review-mode-disputed" data-min-role="lead">Adjudicate</button>
+        <button class="btn primary" id="review-mode-queue">Review queue</button>
+      </div>
+    </div>
+    <div id="review-panel"></div>
+  </main>
+
+  <!-- ============================================================== models -->
+  <main id="view-models" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <div class="grow">
+        <h1>Models</h1>
+        <p>Every trained artifact, its lineage, and its benchmark scores. Promotion
+           to production copies the artifact and swaps the incumbent atomically.</p>
+      </div>
+      <button class="btn quiet" id="open-playground">Playground</button>
+    </div>
+    <div class="grid side">
+      <div class="card">
+        <div class="card-head"><h3>Registry</h3>
+          <select id="model-filter" style="width:auto">
+            <option value="">All</option><option value="draft">Draft</option>
+            <option value="evaluated">Evaluated</option><option value="staging">Staging</option>
+            <option value="production">Production</option><option value="archived">Archived</option>
+          </select>
+        </div>
+        <div id="model-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Leaderboard</h3></div>
+        <div class="card-body tight">
+          <label class="field" style="margin-bottom:10px">
+            <span class="field-label">Benchmark</span>
+            <select id="lb-dataset"></select>
+          </label>
+        </div>
+        <div id="lb-body"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- =============================================================== queue -->
+  <main id="view-queue" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <div class="grow">
+        <h1>Queue</h1>
+        <p>Shared across teams. Job counts from other teams are visible; their
+           contents are not.</p>
+      </div>
+      <label class="switch" style="margin:0">
+        <input type="checkbox" id="queue-auto" checked> Auto-refresh
+      </label>
+    </div>
+    <div id="queue-panel"></div>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div id="drawer-root"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

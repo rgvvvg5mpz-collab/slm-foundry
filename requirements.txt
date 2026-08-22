@@ -1,0 +1,25 @@
+# SLM Foundry
+#   pip install -r requirements.txt
+#
+# Postgres is optional: SQLite is the default and is enough for a single worker.
+# Set FOUNDRY_DATABASE_URL=postgresql+psycopg://host/foundry to move to Postgres,
+# which you want as soon as more than one worker is running.
+
+# API + queue
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+SQLAlchemy>=2.0
+
+# Training. transformers pulls in `tokenizers`, which the tiny backend uses to
+# build a word-level vocabulary from the uploaded dataset.
+torch>=2.2
+transformers>=4.44
+numpy>=1.26
+
+# Optional — Postgres driver. SQLite needs nothing.
+# psycopg[binary]>=3.1
+
+# Optional — the RLAIF judge. Without it the pipeline still runs end to end on
+# `heuristic-v1`, a mechanical scorer that is labelled as such everywhere.
+anthropic>=0.40
