@@ -82,3 +82,46 @@ def revoke_token(s: Session, token: str) -> None:
 
 def has_role(user: User, minimum: str) -> bool:
     return ROLE_RANK.get(user.role, 0) >= ROLE_RANK[minimum]
+
+
+# ------------------------------------------------------------------- API keys
+
+API_KEY_PREFIX = "sk-foundry-"
+
+
+def create_api_key(s: Session, *, team_id: int, name: str, scope: str = "serve",
+                   created_by: int | None = None) -> tuple["ApiKey", str]:
+    """Mint a key. The plaintext is returned once and never stored."""
+    from .models import ApiKey
+
+    secret = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    key = ApiKey(
+        team_id=team_id, name=name[:200], scope=scope, created_by=created_by,
+        key_hash=hashlib.sha256(secret.encode()).hexdigest(),
+        # Enough to distinguish two keys in a list, far too little to reconstruct one.
+        prefix=secret[:len(API_KEY_PREFIX) + 4],
+    )
+    s.add(key)
+    s.flush()
+    return key, secret
+
+
+def resolve_api_key(s: Session, secret: str):
+    """Return the ApiKey for a plaintext secret, or None.
+
+    Records usage on the row. That write is the only reason this is not a pure
+    lookup, and it is what makes an unused-but-still-live key visible to whoever
+    has to decide whether revoking it will break something.
+    """
+    from .models import ApiKey
+
+    if not secret.startswith(API_KEY_PREFIX):
+        return None
+    key = s.execute(
+        select(ApiKey).where(ApiKey.key_hash == hashlib.sha256(secret.encode()).hexdigest())
+    ).scalar_one_or_none()
+    if key is None or key.revoked:
+        return None
+    key.last_used_at = utcnow()
+    key.calls = (key.calls or 0) + 1
+    return key

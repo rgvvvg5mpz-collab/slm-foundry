@@ -89,9 +89,53 @@ Press `/` in either to search.
 PYTHONPATH=src:scripts python scripts/smoke.py
 ```
 
-Seventeen checks covering every pipeline, the queue's lease protocol, tenancy
+Twenty-one checks covering every pipeline, the queue's lease protocol, API keys,
+model resolution, the exactness of the LoRA merge, export packaging, tenancy
 isolation, the failure path, and the audit chain — about a minute, no GPU, no
 downloads. See **The tiny backend** below for what that does and does not prove.
+
+---
+
+## Using the model you trained
+
+Promotion is not the end of the line. A promoted version is served over an
+**OpenAI-compatible** endpoint, so any existing client works by changing the base
+URL:
+
+```bash
+curl https://your-host/v1/chat/completions \
+  -H "Authorization: Bearer $FOUNDRY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "support-bot", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+`support-bot` resolves to whatever is currently in production, so promoting a new
+version moves every caller with no redeploy. `support-bot@4` pins a version,
+`support-bot@staging` takes the newest staging build, and `#17` addresses a
+version id directly — including archived ones, so a service pinned to one does not
+break when it is superseded. `GET /v1/models` lists what is nameable, and
+`"stream": true` streams server-sent events.
+
+API keys are long-lived (session tokens expire in twelve hours and are useless to a
+service), hashed at rest, and shown exactly once. A `serve`-scoped key can only
+call `/v1` — the credential baked into a production service cannot delete a
+dataset.
+
+Models are cached in the API process, two at a time by default, LRU. Requests to
+one model are serialised — for throughput, run several API processes.
+
+**Export** produces either the LoRA adapter alone (megabytes, needs the base model)
+or a **merged** model directory with the adapter folded into the base weights,
+which loads with plain `transformers` and has no dependency on this system:
+
+```python
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("support-bot-v4")
+```
+
+The merge is exact — verified in the smoke test to change logits by less than
+1e-4 — and both serving and merged export refuse a tiny-backend version rather
+than shipping noise.
 
 ---
 

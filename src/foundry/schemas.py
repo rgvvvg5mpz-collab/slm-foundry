@@ -119,3 +119,39 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8)
     role: Literal["viewer", "member", "reviewer", "lead", "admin"] = "member"
     team_id: int
+
+
+# ------------------------------------------------------------ serving & export
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    # 'serve' can only call /v1. A credential baked into a production service
+    # should not be able to delete a dataset.
+    scope: Literal["serve", "full"] = "serve"
+
+
+class ExportRequest(BaseModel):
+    fmt: Literal["adapter", "merged"] = "adapter"
+
+
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    """OpenAI-shaped, so existing clients work unchanged.
+
+    ``model`` accepts ``name`` (whatever is promoted), ``name@4``, ``name@staging``
+    or ``#17``. Unsupported OpenAI fields are accepted and ignored rather than
+    rejected — a client that always sends ``frequency_penalty`` should not fail.
+    """
+    model: str
+    messages: list[ChatMessage] = Field(min_length=1)
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    temperature: float = Field(default=0.7, ge=0, le=2)
+    top_p: float = Field(default=1.0, ge=0.01, le=1)
+    n: int = Field(default=1, ge=1, le=4)
+    stream: bool = False
+
+    model_config = {"extra": "ignore", "protected_namespaces": ()}

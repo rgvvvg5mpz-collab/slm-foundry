@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import signal
 import socket
 import sys
@@ -39,13 +40,14 @@ from .db import append_audit, get_session, init_db
 from .evaluate import evaluate_rows
 from .judge import get_judge
 from .models import (
-    Dataset, EvalRun, ModelVersion, PreferencePair, ReviewBatch, ReviewItem, Run, utcnow,
+    Dataset, EvalRun, ModelExport, ModelVersion, PreferencePair, ReviewBatch,
+    ReviewItem, Run, utcnow,
 )
-from .paths import eval_dir, run_dir
+from .paths import eval_dir, export_dir, run_dir
 from .trainers import Cancelled, TrainContext, TrainRequest, get_trainer
 from .trainers.base import resolve_backend
 
-ALL_KINDS = ("train", "eval", "generate", "judge", "assemble")
+ALL_KINDS = ("train", "eval", "generate", "judge", "assemble", "export")
 _shutdown = False
 
 
@@ -514,8 +516,109 @@ def handle_assemble(job: dict) -> dict[str, Any]:
     return {**stats, "agreement": report}
 
 
+# ------------------------------------------------------------------ job: export
+
+def handle_export(job: dict) -> dict[str, Any]:
+    """Package a model version for use outside this system."""
+    import hashlib
+    import tarfile
+
+    export_id = job["payload"]["export_id"]
+    with get_session() as s:
+        ex = s.get(ModelExport, export_id)
+        if ex is None:
+            raise ValueError("no such export")
+        ex.status = "running"
+        ex.job_id = job["id"]
+        mv = s.get(ModelVersion, ex.model_version_id)
+        if mv is None:
+            raise ValueError("export points at a missing model version")
+        snap = {"fmt": ex.fmt, "adapter": mv.artifact_dir, "base": mv.base_model,
+                "label": f"{mv.name}-v{mv.version}", "mv_id": mv.id}
+
+    out = export_dir(export_id)
+    ctx = _ctx_for(job, out)
+    staged = out / snap["label"]
+    if staged.exists():
+        shutil.rmtree(staged)
+    staged.mkdir(parents=True)
+
+    if snap["fmt"] == "adapter":
+        ctx.log(f"packaging adapter for {snap['label']}")
+        src = Path(snap["adapter"])
+        if not src.exists():
+            raise ValueError(f"adapter directory is missing: {src}")
+        for f in src.iterdir():
+            if f.is_file():
+                shutil.copy2(f, staged / f.name)
+        (staged / "README.txt").write_text(
+            f"LoRA adapter for {snap['label']}\n"
+            f"Base model: {snap['base']}\n\n"
+            "These are adapter weights only. They are meaningless without the base\n"
+            "model above, which you must load separately. For a self-contained model\n"
+            "that any transformers runtime can load directly, export the 'merged'\n"
+            "format instead.\n"
+        )
+    elif snap["fmt"] == "merged":
+        backend = resolve_backend("auto", snap["base"])
+        if backend == "tiny":
+            # The "base model" here is random noise generated at load time. Merging
+            # into it would produce a file that looks like a model and is not one.
+            raise ValueError(
+                f"cannot export a merged model: the base model {snap['base']!r} is not "
+                "available locally, so this version was trained on the tiny backend. "
+                "Download the base model and retrain, or export the adapter instead."
+            )
+        ctx.log(f"merging adapter into {snap['base']} — this loads the full model")
+        from .trainers.factory import build_policy
+
+        stub = TrainRequest(run_id=0, method="export", base_model=snap["base"],
+                            params={}, lora={}, out_dir=out, train_rows=[], val_rows=[])
+        policy = build_policy(stub, backend, adapter_dir=snap["adapter"],
+                              inference_only=True)
+        from .trainers.lora import merge_and_unload
+        merged = merge_and_unload(policy.model)
+        ctx.log(f"folded {merged} adapter modules into the base weights")
+        policy.model.save_pretrained(staged)
+        policy.tokenizer.save_pretrained(staged)
+        (staged / "README.txt").write_text(
+            f"{snap['label']} — merged model\n"
+            f"Derived from {snap['base']} with LoRA adapters folded in.\n\n"
+            "Self-contained: load it with transformers directly.\n"
+            "  from transformers import AutoModelForCausalLM, AutoTokenizer\n"
+            f"  model = AutoModelForCausalLM.from_pretrained('{snap['label']}')\n"
+        )
+    else:
+        raise ValueError(f"unknown export format {snap['fmt']!r}")
+
+    archive = out / f"{snap['label']}-{snap['fmt']}.tar.gz"
+    ctx.log(f"writing {archive.name}")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname=snap["label"])
+    shutil.rmtree(staged)                      # the archive is the artifact
+
+    digest = hashlib.sha256()
+    with archive.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+
+    with get_session() as s:
+        ex = s.get(ModelExport, export_id)
+        ex.status = "succeeded"
+        ex.path = str(archive)
+        ex.bytes = archive.stat().st_size
+        ex.sha256 = digest.hexdigest()
+        append_audit(s, action="model.exported", actor_id=ex.created_by, actor_type="worker",
+                     team_id=ex.team_id, subject_type="model_version",
+                     subject_id=snap["mv_id"], payload={"format": snap["fmt"],
+                                                        "bytes": ex.bytes})
+    return {"format": snap["fmt"], "bytes": archive.stat().st_size,
+            "sha256": digest.hexdigest()[:12]}
+
+
 HANDLERS = {
     "train": handle_train,
+    "export": handle_export,
     "eval": handle_eval,
     "generate": handle_generate,
     "judge": handle_judge,
@@ -524,6 +627,16 @@ HANDLERS = {
 
 
 # ---------------------------------------------------------------------- runloop
+
+def _mark_export_failed(job: dict, message: str) -> None:
+    if job.get("kind") != "export":
+        return
+    with get_session() as s:
+        ex = s.get(ModelExport, job["payload"].get("export_id", -1))
+        if ex is not None:
+            ex.status = "failed"
+            ex.error = message[:4000]
+
 
 def _mark_run_failed(job: dict, message: str, terminal: bool) -> None:
     if not job.get("run_id"):
@@ -558,6 +671,8 @@ def run_once(worker_id: str, kinds: list[str]) -> bool:
         q.log(job["id"], traceback.format_exc()[-4000:], "error")
         status = q.fail_or_retry(job["id"], job["lease_token"], detail)
         _mark_run_failed(job, detail, terminal=status != "queued")
+        if status != "queued":
+            _mark_export_failed(job, detail)
     finally:
         q.touch_worker(worker_id, None)
     return True

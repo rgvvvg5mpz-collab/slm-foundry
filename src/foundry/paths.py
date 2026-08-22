@@ -55,6 +55,10 @@ def model_dir(model_version_id: int) -> Path:
     return _sub("models", str(model_version_id))
 
 
+def export_dir(export_id: int) -> Path:
+    return _sub("exports", str(export_id))
+
+
 def static_dir() -> Path:
     return PROJECT_ROOT / "static"
 

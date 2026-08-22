@@ -36,6 +36,7 @@
   <a href="#review">Teaching by comparison</a>
   <a href="#preference-training">Training on preferences</a>
   <a href="#benchmark-promote">Benchmarking &amp; promoting</a>
+  <a href="#serving">Shipping the model</a>
   <a href="#teams-queue">Teams, roles and the queue</a>
 
   <h4>Advanced</h4>
@@ -536,6 +537,102 @@
     audit log. <strong>Lineage</strong> on each model walks the chain back — DPO →
     SFT → base — so “what produced this?” is a question with an answer.
   </p>
+</section>
+
+<section id="serving" data-level="intermediate">
+  <div class="section-head">
+    <h2>Shipping the model</h2><span class="chip intermediate">Intermediate</span>
+  </div>
+  <div class="rule"></div>
+  <p>
+    Promotion marks a version as the one you stand behind. Two things then make it
+    usable outside the console: an inference endpoint, and an export.
+  </p>
+
+  <h3>Calling it over HTTP</h3>
+  <p>
+    SLM Foundry serves an <strong>OpenAI-compatible</strong> endpoint, so any client
+    library that already speaks to <code>/v1/chat/completions</code> works by
+    changing the base URL and the key.
+  </p>
+  <ol class="steps">
+    <li><strong>Make a key</strong>
+      <em>Models → API keys → New key</em>. Session tokens expire in twelve hours,
+      which is right for a browser and useless for a service. API keys do not.
+      <p>Scope <code>serve</code> can only call <code>/v1</code> — it cannot read
+      your datasets or delete anything. Use it for anything running in production.
+      The secret is shown <strong>once</strong>; it is stored only as a hash and
+      cannot be recovered.</p></li>
+    <li><strong>Call it</strong>
+      <pre><code>curl https://your-host/v1/chat/completions \
+  -H <span class="s">"Authorization: Bearer $FOUNDRY_API_KEY"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"model": "support-bot",
+       "messages": [{"role": "user", "content": "Hello"}]}'</span></code></pre></li>
+  </ol>
+
+  <h4>How the model name resolves</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>You send</th><th>You get</th></tr></thead>
+    <tbody>
+      <tr><td><code>support-bot</code></td>
+        <td>Whichever version is in <strong>production</strong> right now. Promote a
+            new one and callers follow it with no redeploy.</td></tr>
+      <tr><td><code>support-bot@4</code></td><td>Exactly version 4, forever.</td></tr>
+      <tr><td><code>support-bot@staging</code></td><td>The newest staging version.</td></tr>
+      <tr><td><code>#17</code></td><td>That version id — including archived ones, so a
+            service pinned to one does not break when it is superseded.</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    <code>GET /v1/models</code> lists what you can name. Streaming works: set
+    <code>"stream": true</code> and read server-sent events.
+  </p>
+
+  <div class="note">
+    <span class="label">Where inference actually runs</span>
+    In the API process, not on a worker. Models are cached in memory (two by
+    default, LRU) because loading weights takes seconds and would otherwise
+    dominate latency. Requests to the same model are serialised — one process
+    generates one sequence at a time. For real throughput, run several API
+    processes behind a load balancer.
+  </div>
+
+  <div class="warn-box">
+    <span class="label">Tiny-backend versions are refused</span>
+    If a version was trained without its base model present, its weights are a
+    randomly-initialised stand-in and it emits noise. The endpoint returns
+    <strong>409</strong> with an explanation rather than handing your service empty
+    strings. The playground still opens it, behind a warning a human reads.
+  </div>
+
+  <h3>Taking the model elsewhere</h3>
+  <p><em>Models → your version → Export.</em> Two formats:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Format</th><th>What you get</th><th>Use it when</th></tr></thead>
+    <tbody>
+      <tr><td><strong>adapter</strong></td>
+        <td>The LoRA weights alone — a few megabytes. Useless without the base
+            model, which you load separately.</td>
+        <td>You already have the base model and want to keep many variants cheaply.</td></tr>
+      <tr><td><strong>merged</strong></td>
+        <td>A complete model directory with the adapter folded into the base
+            weights. Loads with plain <code>transformers</code>, no knowledge of
+            this system required.</td>
+        <td>You are handing it to another team, another runtime, or a serving stack
+            like vLLM.</td></tr>
+    </tbody>
+  </table></div>
+  <p>
+    Exports run as queued jobs — merging loads the full model — and arrive as a
+    <code>.tar.gz</code> with a SHA-256 and a README recording which base model it
+    came from. A merged export of a tiny-backend version is refused for the same
+    reason serving is.
+  </p>
+  <pre><code><span class="c"># a merged export is just a model directory</span>
+<span class="k">from</span> transformers <span class="k">import</span> AutoModelForCausalLM, AutoTokenizer
+model = AutoModelForCausalLM.from_pretrained(<span class="s">"support-bot-v4"</span>)
+tok   = AutoTokenizer.from_pretrained(<span class="s">"support-bot-v4"</span>)</code></pre>
 </section>
 
 <section id="teams-queue" data-level="intermediate">

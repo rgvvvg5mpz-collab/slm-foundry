@@ -18,11 +18,14 @@ That drops a dependency, streams cleanly, and is one line on the browser side
 from __future__ import annotations
 
 import datetime as dt
+import json
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -32,21 +35,23 @@ from . import datasets as dslib
 from . import queue as q
 from . import registry as reglib
 from . import review as reviewlib
+from . import serving as servinglib
 from .config import (
     base_models, cfg, defaults_for, judge_config, limits, method_names,
     method_spec, methods, validate_params,
 )
 from .db import append_audit, get_session, init_db, session_factory, verify_audit_chain
 from .models import (
-    Adjudication, Annotation, Dataset, EvalRun, Job, JobEvent, ModelVersion,
-    PreferencePair, ReviewAssignment, ReviewBatch, ReviewItem, Run, Team, User,
-    utcnow,
+    Adjudication, Annotation, ApiKey, Dataset, EvalRun, Job, JobEvent, ModelExport,
+    ModelVersion, PreferencePair, ReviewAssignment, ReviewBatch, ReviewItem, Run,
+    Team, User, utcnow,
 )
 from .paths import static_dir, upload_dir
 from .schemas import (
-    AdjudicationRequest, AnnotationRequest, DatasetCreate, EvaluateRequest,
-    LoginRequest, LoginResponse, PlaygroundRequest, PromoteRequest,
-    ReviewBatchCreate, RunCreate, TeamCreate, UserCreate, UserOut,
+    AdjudicationRequest, AnnotationRequest, ApiKeyCreate, ChatCompletionRequest,
+    DatasetCreate, EvaluateRequest, ExportRequest, LoginRequest, LoginResponse,
+    PlaygroundRequest, PromoteRequest, ReviewBatchCreate, RunCreate, TeamCreate,
+    UserCreate, UserOut,
 )
 
 app = FastAPI(title="SLM Foundry", version="1.0.0",
@@ -908,6 +913,221 @@ def api_health():
         # The single most useful field here: a queue that only grows with no live
         # worker is the failure this endpoint exists to surface.
         "warning": None if alive else "no live workers — jobs will queue indefinitely",
+    }
+
+
+# -------------------------------------------------------------------- api keys
+
+@app.get("/api/keys")
+def api_keys(user: User = Depends(require_member), s: Session = Depends(db)):
+    rows = s.execute(
+        select(ApiKey).where(ApiKey.team_id == user.team_id).order_by(ApiKey.id.desc())
+    ).scalars().all()
+    return [{
+        "id": k.id, "name": k.name, "prefix": k.prefix, "scope": k.scope,
+        "revoked": k.revoked, "calls": k.calls, "last_used_at": k.last_used_at,
+        "created_at": k.created_at,
+    } for k in rows]
+
+
+@app.post("/api/keys")
+def api_create_key(req: ApiKeyCreate, user: User = Depends(require_member),
+                   s: Session = Depends(db)):
+    """Mint a key. The secret is in this response and nowhere else, ever."""
+    if req.scope == "full" and not authlib.has_role(user, "lead"):
+        raise HTTPException(403, "a full-scope key can do anything you can; lead role required")
+    key, secret = authlib.create_api_key(s, team_id=user.team_id, name=req.name,
+                                         scope=req.scope, created_by=user.id)
+    append_audit(s, action="apikey.created", actor_id=user.id, team_id=user.team_id,
+                 subject_type="api_key", subject_id=key.id,
+                 payload={"name": req.name, "scope": req.scope})
+    return {"id": key.id, "name": key.name, "scope": key.scope, "prefix": key.prefix,
+            "secret": secret,
+            "warning": "Copy this now — it is not stored and cannot be shown again."}
+
+
+@app.delete("/api/keys/{key_id}")
+def api_revoke_key(key_id: int, user: User = Depends(require_member),
+                   s: Session = Depends(db)):
+    key = _owned(s, ApiKey, key_id, user, "api key")
+    key.revoked = True
+    append_audit(s, action="apikey.revoked", actor_id=user.id, team_id=user.team_id,
+                 subject_type="api_key", subject_id=key.id, payload={"name": key.name})
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------- export
+
+@app.post("/api/models/{model_id}/export")
+def api_export(model_id: int, req: ExportRequest, user: User = Depends(require_member),
+               s: Session = Depends(db)):
+    mv = _owned(s, ModelVersion, model_id, user, "model version")
+    if mv.artifact_kind != "adapter":
+        raise HTTPException(400, "only adapter artifacts can be exported")
+    ex = ModelExport(team_id=user.team_id, model_version_id=mv.id, fmt=req.fmt,
+                     status="queued", created_by=user.id)
+    s.add(ex)
+    s.flush()
+    # Higher priority than training: someone is waiting on a download.
+    job = q.enqueue(s, team_id=user.team_id, kind="export",
+                    payload={"export_id": ex.id}, priority=6, created_by=user.id)
+    return {"export_id": ex.id, "job_id": job.id, "status": "queued", "format": req.fmt}
+
+
+@app.get("/api/models/{model_id}/exports")
+def api_exports(model_id: int, user: User = Depends(current_user), s: Session = Depends(db)):
+    mv = _owned(s, ModelVersion, model_id, user, "model version")
+    rows = s.execute(
+        select(ModelExport).where(ModelExport.model_version_id == mv.id)
+        .order_by(ModelExport.id.desc())
+    ).scalars().all()
+    return [{"id": e.id, "format": e.fmt, "status": e.status, "bytes": e.bytes,
+             "sha256": e.sha256[:12], "error": e.error[:300],
+             "created_at": e.created_at} for e in rows]
+
+
+@app.get("/api/exports/{export_id}/download")
+def api_download(export_id: int, user: User = Depends(current_user), s: Session = Depends(db)):
+    ex = _owned(s, ModelExport, export_id, user, "export")
+    if ex.status != "succeeded" or not ex.path:
+        raise HTTPException(409, f"export is {ex.status}")
+    path = Path(ex.path)
+    if not path.exists():
+        raise HTTPException(410, "the archive is no longer on disk")
+    return FileResponse(path, media_type="application/gzip", filename=path.name)
+
+
+# ------------------------------------------------------- OpenAI-compatible /v1
+
+def serving_principal(authorization: str | None = Header(None),
+                      s: Session = Depends(db)) -> tuple[int, str]:
+    """Authenticate a /v1 caller by API key or by session token.
+
+    Both are accepted so the console's own playground and a production service can
+    share one code path. Returns (team_id, label) — the endpoints below never see
+    a User, because a key is not a person.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "missing bearer credential")
+    token = authorization.split(None, 1)[1]
+
+    if token.startswith(authlib.API_KEY_PREFIX):
+        key = authlib.resolve_api_key(s, token)
+        if key is None:
+            raise HTTPException(401, "invalid or revoked API key")
+        return key.team_id, f"key:{key.prefix}"
+
+    user = authlib.resolve_token(s, token)
+    if user is None:
+        raise HTTPException(401, "invalid or expired token")
+    return user.team_id, f"user:{user.email}"
+
+
+@app.get("/v1/models")
+def v1_models(principal: tuple[int, str] = Depends(serving_principal),
+              s: Session = Depends(db)):
+    team_id, _ = principal
+    out = []
+    for mv in servinglib.servable(s, team_id):
+        out.append({
+            "id": f"{mv.name}@{mv.version}", "object": "model",
+            "created": int(mv.created_at.timestamp()),
+            "owned_by": f"team:{team_id}",
+            "foundry": {"name": mv.name, "version": mv.version, "status": mv.status,
+                        "method": mv.method, "base_model": mv.base_model,
+                        "headline": (mv.metrics or {}).get("headline")},
+        })
+        if mv.status == "production":
+            # The unversioned alias resolves here, so advertise it explicitly.
+            out.append({"id": mv.name, "object": "model",
+                        "created": int(mv.created_at.timestamp()),
+                        "owned_by": f"team:{team_id}",
+                        "foundry": {"alias_for": f"{mv.name}@{mv.version}",
+                                    "status": "production"}})
+    return {"object": "list", "data": out}
+
+
+@app.post("/v1/chat/completions")
+def v1_chat(req: ChatCompletionRequest,
+            principal: tuple[int, str] = Depends(serving_principal),
+            s: Session = Depends(db)):
+    team_id, _who = principal
+    try:
+        mv = servinglib.resolve_model(s, team_id, req.model)
+    except servinglib.ModelNotFound as e:
+        raise HTTPException(404, str(e))
+    if not mv.artifact_dir or not Path(mv.artifact_dir).exists():
+        raise HTTPException(409, f"{mv.name}@{mv.version} has no artifact on this host")
+
+    loaded = servinglib.CACHE.get(mv)
+    if loaded.backend == "tiny":
+        # The base model is absent, so this version's weights are a randomly
+        # initialised stand-in whose vocabulary comes from its training rows. It
+        # emits noise. The playground exposes that deliberately, behind a warning
+        # a human reads; an OpenAI-shaped endpoint does not get to hand a service
+        # empty strings and call it a response.
+        servinglib.CACHE.evict(mv.id)
+        raise HTTPException(409,
+            f"{mv.name}@{mv.version} cannot be served: its base model "
+            f"{mv.base_model!r} is not available on this host, so it was trained on "
+            "the tiny backend and its weights are not a real model. Download the base "
+            "model and retrain, or use /api/playground to inspect it.")
+    messages = [m.model_dump() for m in req.messages]
+    label = f"{mv.name}@{mv.version}"
+    created = int(time.time())
+    cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+    if req.stream:
+        def events():
+            first = {"id": cid, "object": "chat.completion.chunk", "created": created,
+                     "model": label,
+                     "choices": [{"index": 0, "delta": {"role": "assistant"},
+                                  "finish_reason": None}]}
+            yield f"data: {json.dumps(first)}\n\n"
+            for piece in servinglib.stream(loaded, messages, max_tokens=req.max_tokens,
+                                           temperature=req.temperature, top_p=req.top_p):
+                chunk = {"id": cid, "object": "chat.completion.chunk", "created": created,
+                         "model": label,
+                         "choices": [{"index": 0, "delta": {"content": piece},
+                                      "finish_reason": None}]}
+                yield f"data: {json.dumps(chunk)}\n\n"
+            done = {"id": cid, "object": "chat.completion.chunk", "created": created,
+                    "model": label,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            yield f"data: {json.dumps(done)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    result = servinglib.complete(loaded, messages, max_tokens=req.max_tokens,
+                                 temperature=req.temperature, top_p=req.top_p, n=req.n)
+    return {
+        "id": cid, "object": "chat.completion", "created": created, "model": label,
+        "choices": [
+            {"index": i, "message": {"role": "assistant", "content": text},
+             "finish_reason": "stop"}
+            for i, text in enumerate(result["choices"])
+        ],
+        "usage": result["usage"],
+        "foundry": {"backend": loaded.backend, "model_version_id": mv.id,
+                    "status": mv.status},
+    }
+
+
+@app.get("/api/serving")
+def api_serving(user: User = Depends(current_user), s: Session = Depends(db)):
+    """What a caller needs to start using this: the endpoint, and what it serves."""
+    return {
+        "endpoint": "/v1/chat/completions",
+        "models_endpoint": "/v1/models",
+        "cache": servinglib.CACHE.stats(),
+        "servable": [
+            {"id": f"{m.name}@{m.version}", "name": m.name, "version": m.version,
+             "status": m.status, "alias": m.name if m.status == "production" else None}
+            for m in servinglib.servable(s, user.team_id)
+        ],
     }
 
 

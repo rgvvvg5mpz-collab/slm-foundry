@@ -81,6 +81,38 @@ class User(Base):
 ROLE_RANK = {"viewer": 0, "member": 1, "reviewer": 2, "lead": 3, "admin": 4}
 
 
+class ApiKey(Base):
+    """A long-lived credential for scripts, applications and CI.
+
+    Session tokens expire in twelve hours, which is right for a browser and
+    useless for a nightly job or a service calling the inference endpoint. These
+    do not expire on a clock.
+
+    Only the SHA-256 of the secret is stored, so the plaintext exists exactly once
+    — in the response that created it. ``prefix`` keeps the first few characters
+    in the clear purely so a human can tell two keys apart in a list without
+    being able to reconstruct either.
+    """
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(200))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16))
+    # 'serve' grants only the /v1 inference endpoints; 'full' also grants the
+    # management API. Separate because the credential baked into a production
+    # service should not be able to delete a dataset.
+    scope: Mapped[str] = mapped_column(String(16), default="serve")
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    team: Mapped[Team] = relationship()
+
+
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
 
@@ -284,6 +316,32 @@ class ModelVersion(Base):
     promoted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     team: Mapped[Team] = relationship()
+
+
+class ModelExport(Base):
+    """A downloadable package built from a model version.
+
+    ``adapter`` is the LoRA weights alone — a few megabytes, useless without the
+    base model. ``merged`` folds them into the base weights and writes a complete
+    model directory that any transformers-compatible runtime can load with no
+    knowledge of this system. The second is what people actually want when they
+    are taking a model somewhere else, and it is slow enough to need a job.
+    """
+    __tablename__ = "model_exports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    model_version_id: Mapped[int] = mapped_column(ForeignKey("model_versions.id"), index=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    # adapter | merged
+    fmt: Mapped[str] = mapped_column(String(16), default="adapter")
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    path: Mapped[str] = mapped_column(String(1024), default="")
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class EvalRun(Base):

@@ -80,6 +80,22 @@ class LoRALinear(nn.Module):
         return out + delta.to(out.dtype)
 
 
+    @torch.no_grad()
+    def merge_(self) -> None:
+        """Fold the adapter into the frozen weight, in place.
+
+        ``delta = (alpha/r) · B·A`` has the shape of a Linear weight, ``(out, in)``.
+        transformers' Conv1D stores its weight transposed, so it needs the
+        transpose added instead — get this wrong and the export silently produces
+        a scrambled model that still loads.
+        """
+        delta = (self.lora_B.weight @ self.lora_A.weight) * self.scaling
+        w = self.base.weight
+        w.add_((delta.t() if type(self.base).__name__ == "Conv1D" else delta).to(w.dtype))
+        # Zero the adapter so a second merge cannot double-apply it.
+        self.lora_B.weight.zero_()
+
+
 def _matches(name: str, targets: list[str]) -> bool:
     leaf = name.rsplit(".", 1)[-1]
     return leaf in targets
@@ -157,6 +173,25 @@ def adapters_disabled(model: nn.Module) -> Iterator[None]:
 
 def trainable_parameters(model: nn.Module) -> list[nn.Parameter]:
     return [p for p in model.parameters() if p.requires_grad]
+
+
+def merge_and_unload(model: nn.Module) -> int:
+    """Fold every adapter into its base weight and remove the wrappers.
+
+    Afterwards the model is an ordinary transformers model with no trace of this
+    system in it — which is the point. An export nobody needs SLM Foundry to load
+    is an export that outlives it.
+    """
+    merged = 0
+    for _, parent in list(model.named_modules()):
+        for child_name, child in list(parent.named_children()):
+            if isinstance(child, LoRALinear):
+                child.merge_()
+                setattr(parent, child_name, child.base)
+                merged += 1
+    for p in model.parameters():
+        p.requires_grad_(False)
+    return merged
 
 
 # ------------------------------------------------------------------ checkpoints

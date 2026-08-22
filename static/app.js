@@ -1135,6 +1135,7 @@ async function renderDisputed() {
 $('#model-filter').addEventListener('change', renderModels);
 $('#lb-dataset').addEventListener('change', renderLeaderboard);
 $('#open-playground').addEventListener('click', openPlayground);
+$('#open-keys').addEventListener('click', openKeys);
 
 function renderModels() {
   const f = $('#model-filter').value;
@@ -1215,6 +1216,8 @@ async function openModel(id) {
       } }, 'Run evaluation') : null,
       h('button', { class: 'btn quiet', onClick: () => openPlayground(id) }, 'Try it')),
 
+    deployCard(m),
+
     h('div', { class: 'card', style: 'margin-bottom:14px' },
       h('div', { class: 'card-head' }, h('h3', { text: 'Lineage' })),
       h('div', { class: 'card-body tight' }, h('table', { class: 'data' },
@@ -1241,6 +1244,142 @@ async function openModel(id) {
         ...Object.entries(m.metrics || {}).filter(([, v]) => typeof v !== 'object')
           .map(([k, v]) => [h('dt', { text: titleCase(k) }), h('dd', { text: fmtNum(v) })]).flat()))),
   ]);
+  refreshExports(id);
+}
+
+/** Everything needed to call this model from outside the console, plus export.
+ *  Lives on the model drawer because "how do I use this?" is the question people
+ *  have while looking at a model, not on a separate page they have to find. */
+function deployCard(m) {
+  const alias = m.status === 'production' ? m.name : `${m.name}@${m.version}`;
+  const tiny = m.backend === 'tiny';
+  const curl = `curl ${location.origin}/v1/chat/completions \\
+  -H "Authorization: Bearer $FOUNDRY_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${alias}",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'`;
+
+  return h('div', { class: 'card', style: 'margin-bottom:14px' },
+    h('div', { class: 'card-head' }, h('h3', { text: 'Use this model' }),
+      m.status === 'production'
+        ? h('span', { class: 'chip good', text: 'served at ' + m.name })
+        : h('span', { class: 'chip', text: 'pin with @' + m.version })),
+    h('div', { class: 'card-body' },
+      tiny ? h('div', { class: 'banner' },
+        h('strong', { text: 'Not servable. ' }),
+        'This version was trained on the tiny backend, so its weights are a ' +
+        'randomly-initialised stand-in. The inference endpoint refuses it rather than ' +
+        'returning noise. The adapter still exports.') : null,
+
+      h('p', { class: 'small muted' },
+        m.status === 'production'
+          ? 'Callers can use the bare name and always get whichever version is promoted.'
+          : 'Only production versions answer to the bare name. Promote it, or pin the version.'),
+      h('pre', { class: 'log', style: 'max-height:none', text: curl }),
+      h('div', { class: 'row auto', style: 'margin-top:10px' },
+        h('button', { class: 'btn sm', onClick: () => copy(curl) }, 'Copy curl'),
+        h('button', { class: 'btn sm quiet', onClick: openKeys }, 'API keys'),
+        h('span', { style: 'flex:1' }),
+        h('button', { class: 'btn sm', onClick: () => runExport(m.id, 'adapter') },
+          'Export adapter'),
+        h('button', { class: 'btn sm', title: tiny
+            ? 'Needs the real base model — unavailable for a tiny-backend version'
+            : 'Folds the adapter into the base weights: a self-contained model',
+          onClick: () => runExport(m.id, 'merged') }, 'Export merged')),
+      h('div', { id: 'export-list', style: 'margin-top:12px' })));
+}
+
+async function refreshExports(modelId) {
+  const box = $('#export-list'); if (!box) return;
+  const rows = await api(`/api/models/${modelId}/exports`);
+  if (!rows.length) return set(box, h('p', { class: 'small muted', text:
+    'No exports yet. Adapter is a few MB and needs the base model; merged is a ' +
+    'self-contained model directory.' }));
+  set(box, h('table', { class: 'data' },
+    h('tbody', {}, rows.map(e => h('tr', {},
+      h('td', {}, h('span', { class: 'chip', text: e.format })),
+      h('td', {}, statusChip(e.status),
+        e.error ? h('div', { class: 't-sub', style: 'color:var(--bad)',
+                             text: e.error.slice(0, 120) }) : null),
+      h('td', { class: 'num', text: e.bytes ? fmtBytes(e.bytes) : '—' }),
+      h('td', { class: 'num mono t-sub', text: e.sha256 || '' }),
+      h('td', {}, e.status === 'succeeded'
+        ? h('a', { class: 'btn sm', href: `/api/exports/${e.id}/download` }, 'Download')
+        : null))))));
+}
+
+async function runExport(modelId, fmt) {
+  try {
+    await api(`/api/models/${modelId}/export`, { method: 'POST', body: { fmt } });
+    toast(`${fmt} export queued`, 'good');
+    refreshExports(modelId);
+    // Exports take seconds, so poll briefly rather than making the user refresh.
+    let n = 0;
+    const t = setInterval(() => { refreshExports(modelId); if (++n > 20) clearInterval(t); }, 3000);
+  } catch (e) { toast(e.message, 'bad'); }
+}
+
+function copy(text) {
+  navigator.clipboard.writeText(text).then(
+    () => toast('Copied', 'good'), () => toast('Could not copy', 'bad'));
+}
+
+/** API key management. The secret is shown once, in the response that created it,
+ *  and there is deliberately no way to retrieve it afterwards. */
+async function openKeys() {
+  const keys = await api('/api/keys');
+  openDrawer('API keys', [
+    h('p', { class: 'muted small' },
+      'Session tokens expire in twelve hours. These do not — use them for services, ' +
+      'scripts and CI. A ', h('code', { text: 'serve' }), ' key can only call ',
+      h('code', { text: '/v1' }), '; it cannot touch your data.'),
+    h('div', { class: 'card', style: 'margin-bottom:14px' },
+      h('div', { class: 'card-head' }, h('h3', { text: 'New key' })),
+      h('div', { class: 'card-body' },
+        h('div', { class: 'row' },
+          h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Name' }),
+            h('input', { type: 'text', id: 'key-name', placeholder: 'prod-support-service' })),
+          h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Scope' }),
+            h('select', { id: 'key-scope' },
+              h('option', { value: 'serve', text: 'serve — /v1 only' }),
+              h('option', { value: 'full', text: 'full — everything you can do' })))),
+        h('button', { class: 'btn primary', onClick: createKey }, 'Create key'),
+        h('div', { id: 'key-out', style: 'margin-top:12px' }))),
+    h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h3', { text: 'Existing keys' })),
+      keys.length ? h('table', { class: 'data' },
+        h('thead', {}, h('tr', {}, ...['Name', 'Key', 'Scope', 'Calls', 'Last used', '']
+          .map(x => h('th', { text: x })))),
+        h('tbody', {}, keys.map(k => h('tr', {},
+          h('td', { class: 't-main', text: k.name }),
+          h('td', { class: 'mono t-sub', text: k.prefix + '…' }),
+          h('td', {}, h('span', { class: 'chip', text: k.scope })),
+          h('td', { class: 'num', text: String(k.calls) }),
+          h('td', { class: 't-sub', text: k.last_used_at ? ago(k.last_used_at) : 'never' }),
+          h('td', {}, k.revoked
+            ? h('span', { class: 'chip bad', text: 'revoked' })
+            : h('button', { class: 'btn sm danger', onClick: async () => {
+                await api(`/api/keys/${k.id}`, { method: 'DELETE' });
+                toast('Key revoked'); openKeys();
+              } }, 'Revoke')))))) 
+        : h('div', { class: 'card-body' },
+            h('p', { class: 'muted small', text: 'No keys yet.' }))),
+  ]);
+
+  async function createKey() {
+    const name = $('#key-name').value.trim();
+    if (!name) return toast('Give the key a name', 'warn');
+    try {
+      const k = await api('/api/keys', { method: 'POST',
+        body: { name, scope: $('#key-scope').value } });
+      set($('#key-out'),
+        h('div', { class: 'banner' }, h('strong', { text: k.warning })),
+        h('pre', { class: 'log', style: 'max-height:none', text: k.secret }),
+        h('button', { class: 'btn sm', onClick: () => copy(k.secret) }, 'Copy key'));
+    } catch (e) { toast(e.message, 'bad'); }
+  }
 }
 
 function openPlayground(modelId = null) {

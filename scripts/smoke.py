@@ -36,7 +36,8 @@ from foundry import worker                                           # noqa: E40
 from foundry.config import defaults_for                              # noqa: E402
 from foundry.db import get_session, init_db, verify_audit_chain      # noqa: E402
 from foundry.models import (                                         # noqa: E402
-    Dataset, EvalRun, ModelVersion, PreferencePair, ReviewBatch, ReviewItem, Run, Team, User,
+    ApiKey, Dataset, EvalRun, ModelExport, ModelVersion, PreferencePair, ReviewBatch,
+    ReviewItem, Run, Team, User,
 )
 
 PASS, FAIL = "\033[32m✓\033[0m", "\033[31m✗\033[0m"
@@ -375,6 +376,130 @@ def t_failure_path():
     return "a run with no data fails cleanly with an actionable message"
 
 
+def t_api_keys():
+    from foundry import auth as authlib
+    with get_session() as s:
+        team = s.execute(select(Team)).scalars().first()
+        user = s.execute(select(User)).scalars().first()
+        key, secret = authlib.create_api_key(s, team_id=team.id, name="smoke",
+                                             created_by=user.id)
+        kid = key.id
+        assert secret.startswith(authlib.API_KEY_PREFIX)
+        # The plaintext must not be recoverable from the row.
+        assert secret not in (key.key_hash + key.prefix), "secret leaked into the row"
+        assert len(key.prefix) < len(secret) / 2, "prefix reveals too much of the key"
+
+    with get_session() as s:
+        assert authlib.resolve_api_key(s, secret).id == kid
+        assert authlib.resolve_api_key(s, secret + "x") is None, "a wrong key resolved"
+        assert authlib.resolve_api_key(s, "not-a-foundry-key") is None
+        s.get(ApiKey, kid).revoked = True
+    with get_session() as s:
+        assert authlib.resolve_api_key(s, secret) is None, "a revoked key still resolves"
+        assert s.get(ApiKey, kid).calls >= 1, "usage was not recorded"
+    return "mint, hash-at-rest, resolve, reject-wrong, revoke"
+
+
+def t_model_resolution():
+    from foundry import serving
+    with get_session() as s:
+        mv = s.get(ModelVersion, state["sft_model"])
+        # A unique name: the promotion test deliberately leaves a rival version
+        # sharing this one's name, and resolution is name-based.
+        mv.name = "resolve-fixture"
+        mv.status = "production"
+        team_id, name, ver, mvid = mv.team_id, mv.name, mv.version, mv.id
+
+    with get_session() as s:
+        for spec in (name, f"{name}@{ver}", f"{name}@production", f"#{mvid}"):
+            got = serving.resolve_model(s, team_id, spec)
+            assert got.id == mvid, f"{spec!r} resolved to #{got.id}, expected #{mvid}"
+        for bad in ("nope", f"{name}@999", f"{name}@staging", "#99999"):
+            try:
+                serving.resolve_model(s, team_id, bad)
+                raise AssertionError(f"{bad!r} resolved but should not have")
+            except serving.ModelNotFound:
+                pass
+        # Tenancy: another team must not reach this model by name.
+        other = s.execute(select(User).where(User.email == "other@foundry.local")).scalar_one()
+        try:
+            serving.resolve_model(s, other.team_id, name)
+            raise AssertionError("cross-team model resolution succeeded")
+        except serving.ModelNotFound:
+            pass
+    return "name, name@N, name@status, #id, four rejections, tenancy"
+
+
+def t_lora_merge():
+    """Merging must be numerically exact — a scrambled export still loads."""
+    import torch
+    from foundry.trainers import lora as L
+    from foundry.trainers.tiny import load_tiny_policy
+
+    rows = [{"messages": [{"role": "user", "content": "alpha beta gamma"}],
+             "completion": "delta epsilon"}]
+    pol = load_tiny_policy(rows, {"r": 4, "alpha": 8, "dropout": 0.0}, seed=3)
+    for m in L.lora_modules(pol.model):
+        torch.nn.init.normal_(m.lora_B.weight, std=0.02)
+    pol.model.eval()                       # GPT-2 dropout would swamp the comparison
+
+    ids = pol.tokenizer("alpha beta gamma", return_tensors="pt")["input_ids"]
+    with torch.no_grad():
+        adapted = pol.model(input_ids=ids).logits.clone()
+        with L.adapters_disabled(pol.model):
+            base = pol.model(input_ids=ids).logits.clone()
+    effect = float((adapted - base).abs().max())
+    assert effect > 1e-3, "adapter had no effect; the test would pass vacuously"
+
+    merged = L.merge_and_unload(pol.model)
+    with torch.no_grad():
+        after = pol.model(input_ids=ids).logits
+    drift = float((adapted - after).abs().max())
+    assert merged > 0 and not L.lora_modules(pol.model), "wrappers were not removed"
+    assert drift < 1e-4, f"merge changed the output by {drift:.2e}"
+    return f"{merged} modules folded, drift {drift:.1e} (adapter effect {effect:.3f})"
+
+
+def t_export():
+    with get_session() as s:
+        mv = s.get(ModelVersion, state["sft_model"])
+        team = s.execute(select(Team)).scalars().first()
+        ex = ModelExport(team_id=team.id, model_version_id=mv.id, fmt="adapter",
+                         status="queued")
+        s.add(ex)
+        s.flush()
+        eid = ex.id
+        q.enqueue(s, team_id=team.id, kind="export", payload={"export_id": eid},
+                  max_attempts=1)
+    drain(kinds=("export",))
+
+    import tarfile
+    with get_session() as s:
+        ex = s.get(ModelExport, eid)
+        assert ex.status == "succeeded", f"export {ex.status}: {ex.error[:200]}"
+        assert ex.bytes > 0 and len(ex.sha256) == 64
+        names = tarfile.open(ex.path).getnames()
+        assert any(n.endswith("adapter.pt") for n in names), names
+        assert any(n.endswith("README.txt") for n in names), "no provenance note"
+
+    # A merged export of a tiny-backend model must refuse rather than write noise.
+    with get_session() as s:
+        team = s.execute(select(Team)).scalars().first()
+        ex2 = ModelExport(team_id=team.id, model_version_id=state["sft_model"],
+                          fmt="merged", status="queued")
+        s.add(ex2)
+        s.flush()
+        eid2 = ex2.id
+        q.enqueue(s, team_id=team.id, kind="export", payload={"export_id": eid2},
+                  max_attempts=1)
+    drain(kinds=("export",))
+    with get_session() as s:
+        ex2 = s.get(ModelExport, eid2)
+        assert ex2.status == "failed", "merged export of a noise model succeeded"
+        assert "tiny backend" in ex2.error, ex2.error[:200]
+    return f"adapter packaged ({names and len(names)} entries), merged correctly refused"
+
+
 def t_audit():
     with get_session() as s:
         result = verify_audit_chain(s)
@@ -399,6 +524,10 @@ for label, fn in [
     ("registry promotion", t_promotion),
     ("tenancy isolation", t_tenancy),
     ("failure path", t_failure_path),
+    ("API keys", t_api_keys),
+    ("model resolution for serving", t_model_resolution),
+    ("LoRA merge is exact", t_lora_merge),
+    ("export packaging", t_export),
     ("audit chain", t_audit),
 ]:
     check(label, fn)
