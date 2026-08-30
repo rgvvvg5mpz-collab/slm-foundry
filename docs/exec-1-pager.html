@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Foundry — Executive Summary</title>
+<style>
+  :root{
+    --ink:#161a22; --ink2:#4d5566; --ink3:#6b7488; --ink4:#98a1b3;
+    --line:#dee2ea; --bg:#ffffff; --soft:#f8f9fb;
+    --accent:#4f46e5; --accent-soft:#eef0ff; --accent-line:#c9cdfa;
+    --warn:#a3620a; --warn-soft:#fdf4e6; --warn-line:#f0d7ab;
+    --good:#0f7a4d; --good-soft:#eaf7f0; --good-line:#b4e2c9;
+    --run:#1d6fd0;  --run-soft:#eaf2fd;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--soft);color:var(--ink);font-family:var(--sans);
+       font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .page{width:210mm;min-height:297mm;margin:16px auto;background:var(--bg);
+        padding:13mm 14mm;box-shadow:0 2px 20px rgba(22,26,34,.10)}
+
+  header{display:flex;align-items:center;gap:11px;padding-bottom:10px;
+         border-bottom:2px solid var(--ink)}
+  .mark{width:30px;height:30px;border-radius:8px;flex:0 0 30px;position:relative;
+        background:linear-gradient(140deg,var(--accent),var(--run))}
+  .mark::after{content:"";position:absolute;inset:8px 8px auto 8px;height:2.5px;border-radius:2px;
+        background:rgba(255,255,255,.92);
+        box-shadow:0 5px 0 rgba(255,255,255,.6),0 10px 0 rgba(255,255,255,.32)}
+  h1{margin:0;font-size:21px;letter-spacing:-.02em;font-weight:680}
+  .tag{margin:1px 0 0;color:var(--ink3);font-size:12.5px}
+  .stamp{margin-left:auto;text-align:right;font-size:10px;color:var(--ink4);
+         text-transform:uppercase;letter-spacing:.07em;line-height:1.6}
+
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);
+     margin:16px 0 7px;font-weight:720}
+  p{margin:0 0 8px}
+  .lead{font-size:14.5px;line-height:1.5;color:var(--ink);margin:11px 0 4px}
+  .lead b{font-weight:680}
+  strong{font-weight:650}
+  .muted{color:var(--ink3)}
+  .small{font-size:11.5px}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .pain{margin:6px 0 0;padding:0;list-style:none}
+  .pain li{position:relative;padding-left:17px;margin-bottom:5px;color:var(--ink2);font-size:12.5px}
+  .pain li::before{content:"";position:absolute;left:3px;top:7px;width:5px;height:5px;
+        border-radius:50%;background:var(--warn)}
+
+  figure{margin:0}
+  svg{display:block;width:100%;height:auto}
+  figcaption{font-size:10.5px;color:var(--ink4);margin-top:4px;text-align:center}
+
+  .pills{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0 0}
+  .pill{font-size:10px;font-weight:620;padding:2px 6.5px;border-radius:999px;white-space:nowrap;
+        background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line)}
+  .pill.g{background:var(--good-soft);color:var(--good);border-color:var(--good-line)}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:9px 0 0}
+  .stat{border:1px solid var(--line);border-radius:9px;padding:9px 10px;background:var(--soft)}
+  .stat .n{font-size:20px;font-weight:700;letter-spacing:-.02em;line-height:1.15;color:var(--accent)}
+  .stat .l{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink4);margin-top:2px}
+  .stat .d{font-size:11px;color:var(--ink2);margin-top:3px;line-height:1.4}
+
+  .band{margin-top:11px;border:1px solid var(--good-line);background:var(--good-soft);
+        border-radius:9px;padding:9px 12px;font-size:12px;color:var(--ink2)}
+  .band b{color:var(--good)}
+
+  footer{margin-top:13px;padding-top:8px;border-top:1px solid var(--line);
+         display:flex;gap:12px;align-items:baseline;font-size:10.5px;color:var(--ink4)}
+  footer .note{flex:1}
+  code{font-family:var(--mono);font-size:.92em}
+
+  @media print{
+    body{background:#fff}
+    .page{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}
+    @page{size:A4;margin:12mm}
+  }
+  @media (max-width:820px){
+    .page{width:auto;padding:18px}
+    .cols,.stats{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <span class="mark" aria-hidden="true"></span>
+  <div>
+    <h1>SLM Foundry</h1>
+    <p class="tag">Bring your data. Get a small model that does your job — without an ML team.</p>
+  </div>
+  <div class="stamp">Executive summary<br>One page</div>
+</header>
+
+<p class="lead">
+  <b>Every team is paying frontier-model prices for work a much smaller model could do.</b>
+  SLM Foundry turns your own examples into a specialised model — through a web console,
+  with no training code — and keeps the whole process auditable.
+</p>
+
+<!-- ══════════════════════════════ PROBLEM ══════════════════════════════ -->
+<h2>The problem</h2>
+<div class="cols">
+  <div>
+    <p class="small muted" style="margin-top:2px">
+      Most production AI work is narrow and repetitive — classify this ticket, extract these
+      fields, apply our policy. It is routed to a general-purpose frontier model because that
+      is the only option teams have.
+    </p>
+    <ul class="pain">
+      <li><strong>Cost scales with volume</strong>, not with difficulty.</li>
+      <li><strong>Latency</strong> makes some features impossible to ship.</li>
+      <li><strong>Data leaves your perimeter</strong> on every call.</li>
+      <li><strong>Building the alternative needs an ML team</strong> — training code,
+          RLHF plumbing, a labelling tool, evaluation. So it doesn't get built.</li>
+    </ul>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 340 150" role="img" aria-label="Narrow repetitive tasks all routed to one expensive general model">
+      <g font-family="-apple-system, system-ui, sans-serif" font-size="8.5">
+        <g fill="#4d5566">
+          <rect x="2"  y="8"  width="86" height="17" rx="5" fill="#f1f3f7" stroke="#dee2ea"/>
+          <text x="45" y="19.5" text-anchor="middle">Classify ticket</text>
+          <rect x="2"  y="32" width="86" height="17" rx="5" fill="#f1f3f7" stroke="#dee2ea"/>
+          <text x="45" y="43.5" text-anchor="middle">Extract fields</text>
+          <rect x="2"  y="56" width="86" height="17" rx="5" fill="#f1f3f7" stroke="#dee2ea"/>
+          <text x="45" y="67.5" text-anchor="middle">Apply policy</text>
+          <rect x="2"  y="80" width="86" height="17" rx="5" fill="#f1f3f7" stroke="#dee2ea"/>
+          <text x="45" y="91.5" text-anchor="middle">Route request</text>
+          <rect x="2"  y="104" width="86" height="17" rx="5" fill="#f1f3f7" stroke="#dee2ea"/>
+          <text x="45" y="115.5" text-anchor="middle">Summarise</text>
+        </g>
+        <g stroke="#98a1b3" stroke-width="1" fill="none">
+          <path d="M88 16.5 C120 16.5, 130 60, 158 68"/>
+          <path d="M88 40.5 C120 40.5, 132 62, 158 70"/>
+          <path d="M88 64.5 H158"/>
+          <path d="M88 88.5 C120 88.5, 132 78, 158 72"/>
+          <path d="M88 112.5 C120 112.5, 130 80, 158 74"/>
+        </g>
+        <rect x="160" y="34" width="118" height="66" rx="9" fill="#fdf4e6" stroke="#f0d7ab" stroke-width="1.5"/>
+        <text x="219" y="58" text-anchor="middle" font-size="10.5" font-weight="700" fill="#a3620a">Frontier model</text>
+        <text x="219" y="72" text-anchor="middle" font-size="8" fill="#a3620a">general-purpose</text>
+        <text x="219" y="84" text-anchor="middle" font-size="8" fill="#a3620a">priced for the hardest task</text>
+        <g font-size="8.5" fill="#a3620a" font-weight="650">
+          <text x="290" y="47">$$$</text>
+          <text x="290" y="65">slow</text>
+          <text x="290" y="83">off-prem</text>
+        </g>
+      </g>
+    </svg>
+    <figcaption>One expensive tool for every job, however small</figcaption>
+  </figure>
+</div>
+
+<!-- ══════════════════════════════ SOLUTION ═════════════════════════════ -->
+<h2>The solution</h2>
+<figure>
+  <svg viewBox="0 0 700 132" role="img" aria-label="The SLM Foundry loop: data, fine-tune, feedback, align, benchmark, promote, serve">
+    <defs>
+      <marker id="a" viewBox="0 0 8 8" refX="6.5" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto">
+        <path d="M0.5 0.5 L7 4 L0.5 7.5 z" fill="#98a1b3"/>
+      </marker>
+    </defs>
+    <g font-family="-apple-system, system-ui, sans-serif">
+      <g stroke="#98a1b3" stroke-width="1.1" marker-end="url(#a)" fill="none">
+        <path d="M92 40 H108"/><path d="M192 40 H208"/><path d="M292 40 H308"/>
+        <path d="M392 40 H408"/><path d="M492 40 H508"/>
+      </g>
+      <!-- stages -->
+      <g>
+        <rect x="4"   y="18" width="88" height="44" rx="8" fill="#f8f9fb" stroke="#dee2ea"/>
+        <text x="48"  y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#161a22">Your data</text>
+        <text x="48"  y="50" text-anchor="middle" font-size="8" fill="#6b7488">examples · prompts</text>
+
+        <rect x="108" y="18" width="84" height="44" rx="8" fill="#eef0ff" stroke="#c9cdfa"/>
+        <text x="150" y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#4f46e5">Fine-tune</text>
+        <text x="150" y="50" text-anchor="middle" font-size="8" fill="#4f46e5">SFT · LoRA</text>
+
+        <rect x="208" y="18" width="84" height="44" rx="8" fill="#eaf2fd" stroke="#bcd8f6"/>
+        <text x="250" y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#1d6fd0">Feedback</text>
+        <text x="250" y="50" text-anchor="middle" font-size="8" fill="#1d6fd0">people or AI judge</text>
+
+        <rect x="308" y="18" width="84" height="44" rx="8" fill="#eef0ff" stroke="#c9cdfa"/>
+        <text x="350" y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#4f46e5">Align</text>
+        <text x="350" y="50" text-anchor="middle" font-size="7.5" fill="#4f46e5">DPO·PPO·GRPO·GSPO</text>
+
+        <rect x="408" y="18" width="84" height="44" rx="8" fill="#f8f9fb" stroke="#dee2ea"/>
+        <text x="450" y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#161a22">Benchmark</text>
+        <text x="450" y="50" text-anchor="middle" font-size="8" fill="#6b7488">held-out data</text>
+
+        <rect x="508" y="18" width="88" height="44" rx="8" fill="#eaf7f0" stroke="#b4e2c9"/>
+        <text x="552" y="37" text-anchor="middle" font-size="10.5" font-weight="680" fill="#0f7a4d">Promote</text>
+        <text x="552" y="50" text-anchor="middle" font-size="8" fill="#0f7a4d">gated on the score</text>
+
+        <rect x="612" y="14" width="84" height="52" rx="8" fill="#161a22"/>
+        <text x="654" y="34" text-anchor="middle" font-size="10.5" font-weight="680" fill="#fff">Serve</text>
+        <text x="654" y="46" text-anchor="middle" font-size="7.5" fill="#c6ccd8">OpenAI-compatible</text>
+        <text x="654" y="56" text-anchor="middle" font-size="7.5" fill="#c6ccd8">or export the weights</text>
+      </g>
+      <path d="M596 40 H608" stroke="#98a1b3" stroke-width="1.1" marker-end="url(#a)" fill="none"/>
+      <!-- feedback loop -->
+      <path d="M654 70 C654 104, 400 112, 250 112 C120 112, 92 96, 92 74"
+            stroke="#4f46e5" stroke-width="1.2" stroke-dasharray="4 3" fill="none" marker-end="url(#a)"/>
+      <text x="372" y="126" text-anchor="middle" font-size="8.5" fill="#4f46e5" font-weight="620">
+        production traffic becomes the next round of training data
+      </text>
+    </g>
+  </svg>
+</figure>
+
+<div class="cols" style="margin-top:6px">
+  <div>
+    <p class="small" style="margin:0">
+      <strong>One product, not a toolkit.</strong> Upload data, pick a method, launch. Reviewers
+      compare answers in a browser; their judgements become training data automatically. Work runs
+      on shared machines with fair-share scheduling, so many teams use one deployment.
+    </p>
+    <div class="pills">
+      <span class="pill">SFT · LoRA</span><span class="pill">DPO</span><span class="pill">PPO</span>
+      <span class="pill">GRPO</span><span class="pill">GSPO</span><span class="pill">RLAIF</span>
+      <span class="pill g">Reward&nbsp;models</span>
+    </div>
+  </div>
+  <div>
+    <p class="small" style="margin:0">
+      <strong>Governed by construction.</strong> Every model traces back to the exact data and
+      settings that produced it. Nothing reaches production without a benchmark score. Promotions
+      and approvals are recorded in a tamper-evident log — the questions an auditor asks are
+      queries, not archaeology.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ IMPACT ══════════════════════════════ -->
+<h2>The impact</h2>
+<div class="stats">
+  <div class="stat">
+    <div class="n">10–100×</div><div class="l">Lower cost per call</div>
+    <div class="d">A task-specific small model versus a frontier API.</div>
+  </div>
+  <div class="stat">
+    <div class="n">&lt;100 ms</div><div class="l">Typical latency</div>
+    <div class="d">Fast enough for features you cannot ship today.</div>
+  </div>
+  <div class="stat">
+    <div class="n">0</div><div class="l">Data leaving</div>
+    <div class="d">Self-hosted. Regulated material never crosses your boundary.</div>
+  </div>
+  <div class="stat">
+    <div class="n">Afternoon</div><div class="l">To first model</div>
+    <div class="d">Instead of the quarter it takes to build this in-house.</div>
+  </div>
+</div>
+
+<div class="band">
+  <b>Where it pays first:</b> the highest-volume, most repetitive call in your stack — ticket
+  triage, document extraction, policy checks, routing. Move that one workload and the platform
+  has paid for itself; every workload after it is margin.
+</div>
+
+<footer>
+  <span class="note">
+    Cost and latency figures are illustrative of the change in <em>class</em>; actual numbers
+    depend on model size, hardware and task. Every model the platform produces reports its own
+    measured benchmark score before it can be promoted.
+  </span>
+  <span><strong>SLM&nbsp;Foundry</strong></span>
+</footer>
+
+</div>
+</body>
+</html>

@@ -78,6 +78,7 @@ in a browser, or go straight to one:
 
 | | |
 |---|---|
+| [**Executive summary**](docs/exec-1-pager.html) | One printable page for technology leaders: the problem in plain English, the loop as a diagram, and the impact. |
 | [**User manual**](docs/user-manual.html) | Operating the product, beginner → advanced. Vocabulary, your first fine-tune, reading results, the review console, choosing a method, tuning, troubleshooting. |
 | [**Methods manual**](docs/methods.html) | The techniques themselves, with the mathematics. LoRA, SFT, Bradley–Terry, DPO (+IPO/cDPO/RPO), PPO, GRPO, GSPO, RLAIF, reward functions, evaluation, review statistics. |
 
